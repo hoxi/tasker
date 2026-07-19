@@ -18,22 +18,40 @@ import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.OnePixelSplitter
+import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.treetable.ListTreeTableModelOnColumns
 import com.intellij.ui.treeStructure.treetable.TreeTable
+import com.intellij.ui.treeStructure.treetable.TreeTableModel
 import com.intellij.util.ui.ColumnInfo
+import com.intellij.util.ui.JBUI
 import java.awt.Component
+import java.awt.Graphics
+import java.awt.Rectangle
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import javax.swing.CellRendererPane
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JTable
 import javax.swing.JTree
 import javax.swing.SwingConstants
+import javax.swing.table.DefaultTableColumnModel
+import javax.swing.table.JTableHeader
 import javax.swing.table.TableCellRenderer
+import javax.swing.table.TableColumn
+import javax.swing.table.TableColumnModel
 import javax.swing.tree.DefaultMutableTreeNode
 import com.intellij.openapi.progress.Task as ProgressTask
+
+/** Column model that keeps the first (ID / tree) column pinned at the far left; other columns may reorder. */
+private class PinnedFirstColumnModel : DefaultTableColumnModel() {
+    override fun moveColumn(columnIndex: Int, newIndex: Int) {
+        if (columnIndex != newIndex && (columnIndex == 0 || newIndex == 0)) return
+        super.moveColumn(columnIndex, newIndex)
+    }
+}
 
 /**
  * Tool window content: a multi-column [TreeTable] of tasks (ID / Status / Summary / Updated / Created)
@@ -47,17 +65,24 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private val columns: Array<ColumnInfo<DefaultMutableTreeNode, *>> = taskerColumns()
     private val root = DefaultMutableTreeNode()
     private val treeModel = ListTreeTableModelOnColumns(root, columns)
-    private val treeTable = TreeTable(treeModel)
+    private val treeTable = SpanningTreeTable(treeModel)
     private val detailsPanel = TaskDetailsPanel()
 
     private var cache: List<ServerGroup> = emptyList()
     private var groupByServer: Boolean = true
+    private var includeClosed: Boolean = false
     private var sortColumn: Int? = null
     private var sortAscending: Boolean = true
+
+    private companion object {
+        const val ID_COLUMN = 0
+        const val STATUS_COLUMN = 1
+    }
 
     init {
         treeTable.setRootVisible(false)
         treeTable.tree.showsRootHandles = true
+        treeTable.setRowHeight(JBUI.scale(24))
         treeTable.setTreeCellRenderer(IdCellRenderer())
         treeTable.tableHeader.defaultRenderer = SortableHeaderRenderer(treeTable.tableHeader.defaultRenderer)
         treeTable.tableHeader.addMouseListener(object : MouseAdapter() {
@@ -80,9 +105,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     private fun setColumnWidths() {
-        val widths = intArrayOf(160, 100, 500, 150, 150)
+        val widths = intArrayOf(160, 110, 500, 150, 150)
         for (i in widths.indices) {
-            treeTable.columnModel.getColumn(i).preferredWidth = widths[i]
+            val column = treeTable.columnModel.getColumn(i)
+            column.preferredWidth = widths[i]
+            // A plain TreeTable ignores ColumnInfo.getRenderer, so install the badge renderer here.
+            // Match by model index so it survives column reordering.
+            if (column.modelIndex == STATUS_COLUMN) {
+                column.cellRenderer = StatusCellRenderer()
+            }
         }
     }
 
@@ -98,6 +129,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             override fun setSelected(e: AnActionEvent, state: Boolean) {
                 groupByServer = state
                 rebuild()
+            }
+        })
+        group.add(object : ToggleAction("Show Closed Issues", "Also fetch and show closed/resolved issues", AllIcons.Actions.ToggleVisibility) {
+            override fun getActionUpdateThread() = ActionUpdateThread.EDT
+            override fun isSelected(e: AnActionEvent) = includeClosed
+            override fun setSelected(e: AnActionEvent, state: Boolean) {
+                includeClosed = state
+                refresh() // closed issues aren't in the cache — refetch from the servers
             }
         })
         val actionToolbar = ActionManager.getInstance().createActionToolbar("TaskerToolbar", group, true)
@@ -119,7 +158,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                             continue
                         }
                         try {
-                            val issues = repo.getIssues(null, 0, 50, false, indicator)
+                            val issues = repo.getIssues(null, 0, 50, includeClosed, indicator)
                             groups.add(ServerGroup(repo, issues.toList(), null))
                         } catch (ce: ProcessCanceledException) {
                             throw ce
@@ -154,14 +193,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             for (serverGroup in cache) {
                 val serverNode = DefaultMutableTreeNode(ServerNode(serverGroup.repository, serverGroup.error))
                 serverGroup.tasks
-                    .map { DefaultMutableTreeNode(TaskNode(it)) }
+                    .map { DefaultMutableTreeNode(TaskNode(it, serverGroup.repository)) }
                     .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
                     .forEach { serverNode.add(it) }
                 root.add(serverNode)
             }
         } else {
-            cache.flatMap { it.tasks }
-                .map { DefaultMutableTreeNode(TaskNode(it)) }
+            cache.flatMap { group -> group.tasks.map { TaskNode(it, group.repository) } }
+                .map { DefaultMutableTreeNode(it) }
                 .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
                 .forEach { root.add(it) }
         }
@@ -236,7 +275,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
                 is TaskNode -> {
                     val task = obj.task
-                    icon = task.icon
+                    // When flat (ungrouped), prepend the server icon so the task's origin is visible;
+                    // when grouped, the server icon already sits on the parent header row.
+                    icon = if (groupByServer) task.icon else obj.repository.icon
                     append(
                         task.presentableId,
                         if (task.isClosed) SimpleTextAttributes.GRAYED_ATTRIBUTES
@@ -270,6 +311,92 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 }
             }
             return component
+        }
+    }
+
+    /**
+     * TreeTable that paints server/message rows across the full width (independent of the columns).
+     * After the normal cell painting, it overpaints such rows with a single component starting at the
+     * tree node's content x (from [getPathBounds]) — so the content spans every column while the
+     * expand/collapse handle, which sits to the left of that x, stays visible.
+     */
+    private inner class SpanningTreeTable(model: TreeTableModel) : TreeTable(model) {
+
+        private val rendererPane = CellRendererPane()
+        private val spanComponent = SimpleColoredComponent()
+
+        init {
+            add(rendererPane)
+        }
+
+        override fun createDefaultColumnModel(): TableColumnModel = PinnedFirstColumnModel()
+
+        // Refuse to start a drag on the pinned ID column: returning without setting the dragged
+        // column means the header never animates it, so there is no flicker/snap-back.
+        override fun createDefaultTableHeader(): JTableHeader = object : JBTableHeader() {
+            override fun setDraggedColumn(column: TableColumn?) {
+                if (column != null && columnModel.columnCount > 0 && column === columnModel.getColumn(ID_COLUMN)) {
+                    super.setDraggedColumn(null)
+                    return
+                }
+                super.setDraggedColumn(column)
+            }
+        }
+
+        private fun spanNode(row: Int): DefaultMutableTreeNode? {
+            val node = tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode ?: return null
+            val obj = node.userObject
+            return if (obj is ServerNode || obj is String) node else null
+        }
+
+        override fun paintComponent(g: Graphics) {
+            super.paintComponent(g)
+            val clip = g.clipBounds ?: Rectangle(0, 0, width, height)
+            var row = 0
+            while (row < rowCount) {
+                val node = spanNode(row)
+                if (node != null) {
+                    val rowRect = getCellRect(row, 0, true)
+                    if (rowRect.y < clip.y + clip.height && rowRect.y + rowRect.height > clip.y) {
+                        val contentX = tree.getPathForRow(row)?.let { tree.getPathBounds(it)?.x } ?: rowRect.x
+                        val spanWidth = width - contentX
+                        if (spanWidth > 0) {
+                            val component = prepareSpan(node, row)
+                            rendererPane.paintComponent(g, component, this, contentX, rowRect.y, spanWidth, rowRect.height, true)
+                        }
+                    }
+                }
+                row++
+            }
+        }
+
+        private fun prepareSpan(node: DefaultMutableTreeNode, row: Int): JComponent {
+            val selected = isRowSelected(row)
+            spanComponent.clear()
+            spanComponent.isOpaque = true
+            spanComponent.background = if (selected) selectionBackground else background
+            when (val obj = node.userObject) {
+                is ServerNode -> {
+                    spanComponent.icon = obj.repository.icon
+                    val nameAttrs =
+                        if (selected) SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, selectionForeground)
+                        else SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES
+                    spanComponent.append(obj.repository.presentableName, nameAttrs)
+                    val suffix = obj.error?.let { "  ($it)" } ?: "  (${node.childCount})"
+                    val suffixAttrs = when {
+                        selected -> SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, selectionForeground)
+                        obj.error != null -> SimpleTextAttributes.ERROR_ATTRIBUTES
+                        else -> SimpleTextAttributes.GRAYED_ATTRIBUTES
+                    }
+                    spanComponent.append(suffix, suffixAttrs)
+                }
+
+                is String -> {
+                    spanComponent.icon = null
+                    spanComponent.append(obj, SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                }
+            }
+            return spanComponent
         }
     }
 }

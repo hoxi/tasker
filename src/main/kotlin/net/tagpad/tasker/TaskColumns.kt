@@ -11,7 +11,7 @@ import javax.swing.tree.DefaultMutableTreeNode
 
 /** User objects carried by the tree nodes. */
 internal class ServerNode(val repository: TaskRepository, val error: String?)
-internal class TaskNode(val task: Task)
+internal class TaskNode(val task: Task, val repository: TaskRepository)
 
 internal fun DefaultMutableTreeNode.task(): Task? = (userObject as? TaskNode)?.task
 
@@ -48,6 +48,8 @@ private class IdColumn : ColumnInfo<DefaultMutableTreeNode, Any>("ID") {
 }
 
 private class StatusColumn : ColumnInfo<DefaultMutableTreeNode, String>("Status") {
+    // Note: the badge renderer is installed on the TableColumn in TaskerPanel — a plain TreeTable
+    // (unlike TableView) does not consult ColumnInfo.getRenderer.
     override fun valueOf(item: DefaultMutableTreeNode): String = item.task()?.let(::statusText) ?: ""
     override fun getComparator(): Comparator<DefaultMutableTreeNode> = byString { statusText(it) }
 }
