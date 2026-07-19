@@ -1,0 +1,20 @@
+<idea-plugin>
+    <id>net.tagpad.tasker</id>
+    <name>Tasker</name>
+    <vendor>net.tagpad</vendor>
+
+    <description><![CDATA[
+        Lists all tasks from configured task servers in a sortable, groupable
+        multi-column table with a details pane, docked in the bottom tool-window area.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.tasks</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Tasks"
+                    anchor="bottom"
+                    icon="AllIcons.Toolwindows.ToolWindowChanges"
+                    factoryClass="net.tagpad.tasker.TaskerToolWindowFactory"/>
+    </extensions>
+</idea-plugin>
