@@ -10,7 +10,7 @@ import java.util.Date
 import javax.swing.tree.DefaultMutableTreeNode
 
 /** User objects carried by the tree nodes. */
-internal class ServerNode(val repository: TaskRepository, val error: String?)
+internal class ServerNode(val repository: TaskRepository, val error: String?, val loading: Boolean = false)
 internal class TaskNode(val task: Task, val repository: TaskRepository)
 
 internal fun DefaultMutableTreeNode.task(): Task? = (userObject as? TaskNode)?.task

@@ -27,12 +27,12 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
         show(null)
     }
 
-    fun show(task: Task?) {
-        editorPane.text = if (task == null) html("<i>Select a task to see its details.</i>") else render(task)
+    fun show(task: Task?, loadingComments: Boolean = false) {
+        editorPane.text = if (task == null) html("<i>Select a task to see its details.</i>") else render(task, loadingComments)
         editorPane.caretPosition = 0
     }
 
-    private fun render(task: Task): String {
+    private fun render(task: Task, loadingComments: Boolean): String {
         val sb = StringBuilder()
         sb.append("<h2>").append(esc(task.presentableId)).append("</h2>")
         task.issueUrl?.takeIf { it.isNotBlank() }?.let {
@@ -45,11 +45,15 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
         task.description?.takeIf { it.isNotBlank() }?.let {
             sb.append("<hr><b>Description</b><br>").append(esc(it).replace("\n", "<br>"))
         }
-        val comments = task.comments
-        if (comments.isNotEmpty()) {
-            sb.append("<hr><b>Comments (").append(comments.size).append(")</b>")
-            // Comment.appendTo renders itself as an HTML fragment (author/date headers + text).
-            for (comment in comments) comment.appendTo(sb)
+        if (loadingComments) {
+            sb.append("<hr><i>Loading comments…</i>")
+        } else {
+            val comments = task.comments
+            if (comments.isNotEmpty()) {
+                sb.append("<hr><b>Comments (").append(comments.size).append(")</b>")
+                // Comment.appendTo renders itself as an HTML fragment (author/date headers + text).
+                for (comment in comments) comment.appendTo(sb)
+            }
         }
         return html(sb.toString())
     }

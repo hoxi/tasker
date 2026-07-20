@@ -8,25 +8,29 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
-import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
 import com.intellij.ui.ColoredTreeCellRenderer
+import com.intellij.ui.JBIntSpinner
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.treetable.ListTreeTableModelOnColumns
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
+import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.ColumnInfo
 import com.intellij.util.ui.JBUI
+import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Rectangle
 import java.awt.event.MouseAdapter
@@ -34,6 +38,7 @@ import java.awt.event.MouseEvent
 import javax.swing.CellRendererPane
 import javax.swing.JComponent
 import javax.swing.JLabel
+import javax.swing.JPanel
 import javax.swing.JTable
 import javax.swing.JTree
 import javax.swing.SwingConstants
@@ -43,7 +48,6 @@ import javax.swing.table.TableCellRenderer
 import javax.swing.table.TableColumn
 import javax.swing.table.TableColumnModel
 import javax.swing.tree.DefaultMutableTreeNode
-import com.intellij.openapi.progress.Task as ProgressTask
 
 /** Column model that keeps the first (ID / tree) column pinned at the far left; other columns may reorder. */
 private class PinnedFirstColumnModel : DefaultTableColumnModel() {
@@ -60,7 +64,12 @@ private class PinnedFirstColumnModel : DefaultTableColumnModel() {
  */
 class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
 
-    private class ServerGroup(val repository: TaskRepository, val tasks: List<Task>, val error: String?)
+    private class ServerGroup(
+        val repository: TaskRepository,
+        val tasks: List<Task>,
+        val error: String?,
+        val loading: Boolean = false,
+    )
 
     private val columns: Array<ColumnInfo<DefaultMutableTreeNode, *>> = taskerColumns()
     private val root = DefaultMutableTreeNode()
@@ -71,12 +80,23 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var cache: List<ServerGroup> = emptyList()
     private var groupByServer: Boolean = true
     private var includeClosed: Boolean = false
+    private var issueLimit: Int = DEFAULT_LIMIT
     private var sortColumn: Int? = null
     private var sortAscending: Boolean = true
+
+    /** Incremented on every (re)load so results from superseded loads can be discarded. */
+    private var loadGeneration: Int = 0
+    /** Incremented on every selection so stale lazy detail fetches can be discarded. */
+    private var detailRequestId: Int = 0
+    /** Task currently shown in the details pane; avoids redundant reloads when selection is restored. */
+    private var currentDetailTaskId: String? = null
+    /** True while the tree is being rebuilt, so selection churn from reload() doesn't refetch details. */
+    private var rebuilding: Boolean = false
 
     private companion object {
         const val ID_COLUMN = 0
         const val STATUS_COLUMN = 1
+        const val DEFAULT_LIMIT = 30
     }
 
     init {
@@ -141,73 +161,109 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         })
         val actionToolbar = ActionManager.getInstance().createActionToolbar("TaskerToolbar", group, true)
         actionToolbar.targetComponent = treeTable
-        return actionToolbar.component
+
+        // Max-issues spinner: how many issues to request per server (lower = faster loads).
+        val spinner = JBIntSpinner(issueLimit, 1, 500)
+        spinner.addChangeListener {
+            val value = spinner.number
+            if (value != issueLimit) {
+                issueLimit = value
+                refresh()
+            }
+        }
+        val limitPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            add(JBLabel("Max:"))
+            add(spinner)
+        }
+
+        return JPanel(BorderLayout()).apply {
+            add(actionToolbar.component, BorderLayout.WEST)
+            add(limitPanel, BorderLayout.EAST)
+        }
     }
 
+    /**
+     * Loads every server in parallel and fills the tree incrementally as each responds, so one slow
+     * server never blocks the others. Configured servers first appear as "loading"; unconfigured ones
+     * are flagged. Results from a superseded load (newer refresh) are discarded via [loadGeneration].
+     */
     private fun refresh() {
-        ProgressManager.getInstance().run(
-            object : ProgressTask.Backgroundable(project, "Loading tasks from servers", true) {
-                override fun run(indicator: ProgressIndicator) {
-                    val manager = TaskManager.getManager(project)
-                    val groups = ArrayList<ServerGroup>()
-                    for (repo in manager.allRepositories) {
-                        indicator.checkCanceled()
-                        indicator.text = "Loading ${repo.presentableName}…"
-                        if (!repo.isConfigured) {
-                            groups.add(ServerGroup(repo, emptyList(), "not configured"))
-                            continue
-                        }
-                        try {
-                            val issues = repo.getIssues(null, 0, 50, includeClosed, indicator)
-                            groups.add(ServerGroup(repo, issues.toList(), null))
-                        } catch (ce: ProcessCanceledException) {
-                            throw ce
-                        } catch (ex: Exception) {
-                            groups.add(ServerGroup(repo, emptyList(), ex.message ?: ex.javaClass.simpleName))
-                        }
-                    }
-                    ApplicationManager.getApplication().invokeLater {
-                        cache = groups
-                        rebuild()
-                    }
+        val generation = ++loadGeneration
+        val limit = issueLimit
+        val includeClosedNow = includeClosed
+        val repositories = TaskManager.getManager(project).allRepositories.toList()
+
+        // Seed the cache so configured servers show up immediately as "loading".
+        cache = repositories.map { repo ->
+            ServerGroup(repo, emptyList(), if (repo.isConfigured) null else "not configured", loading = repo.isConfigured)
+        }
+        rebuild()
+
+        for (repo in repositories) {
+            if (!repo.isConfigured) continue
+            AppExecutorUtil.getAppExecutorService().execute {
+                val result = try {
+                    val issues = repo.getIssues(null, 0, limit, includeClosedNow, EmptyProgressIndicator())
+                    ServerGroup(repo, issues.toList(), null)
+                } catch (ce: ProcessCanceledException) {
+                    return@execute
+                } catch (ex: Exception) {
+                    ServerGroup(repo, emptyList(), ex.message ?: ex.javaClass.simpleName)
+                }
+                ApplicationManager.getApplication().invokeLater {
+                    if (generation != loadGeneration) return@invokeLater // superseded by a newer refresh
+                    cache = cache.map { if (it.repository === repo) result else it }
+                    rebuild()
                 }
             }
-        )
+        }
     }
 
     /** Rebuild the tree from [cache] using the current grouping + sort. No refetch. */
     private fun rebuild() {
-        root.removeAllChildren()
-        if (cache.isEmpty()) {
-            root.add(DefaultMutableTreeNode("No task servers configured"))
-            treeModel.reload()
-            detailsPanel.show(null)
-            return
-        }
-
-        val comparator: Comparator<DefaultMutableTreeNode>? = sortColumn?.let { col ->
-            columns[col].comparator?.let { if (sortAscending) it else it.reversed() }
-        }
-
-        if (groupByServer) {
-            for (serverGroup in cache) {
-                val serverNode = DefaultMutableTreeNode(ServerNode(serverGroup.repository, serverGroup.error))
-                serverGroup.tasks
-                    .map { DefaultMutableTreeNode(TaskNode(it, serverGroup.repository)) }
-                    .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
-                    .forEach { serverNode.add(it) }
-                root.add(serverNode)
+        val selectedId = selectedTaskNode()?.task?.id
+        rebuilding = true
+        try {
+            root.removeAllChildren()
+            if (cache.isEmpty()) {
+                root.add(DefaultMutableTreeNode("No task servers configured"))
+                treeModel.reload()
+                return
             }
-        } else {
-            cache.flatMap { group -> group.tasks.map { TaskNode(it, group.repository) } }
-                .map { DefaultMutableTreeNode(it) }
-                .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
-                .forEach { root.add(it) }
-        }
 
-        treeModel.reload()
-        expandAll()
-        detailsPanel.show(null)
+            val comparator: Comparator<DefaultMutableTreeNode>? = sortColumn?.let { col ->
+                columns[col].comparator?.let { if (sortAscending) it else it.reversed() }
+            }
+
+            if (groupByServer) {
+                for (serverGroup in cache) {
+                    val serverNode =
+                        DefaultMutableTreeNode(ServerNode(serverGroup.repository, serverGroup.error, serverGroup.loading))
+                    serverGroup.tasks
+                        .map { DefaultMutableTreeNode(TaskNode(it, serverGroup.repository)) }
+                        .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
+                        .forEach { serverNode.add(it) }
+                    root.add(serverNode)
+                }
+            } else {
+                val taskNodes = cache.flatMap { group -> group.tasks.map { TaskNode(it, group.repository) } }
+                    .map { DefaultMutableTreeNode(it) }
+                    .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
+                taskNodes.forEach { root.add(it) }
+                if (taskNodes.isEmpty()) {
+                    root.add(DefaultMutableTreeNode(if (cache.any { it.loading }) "Loading…" else "No tasks"))
+                }
+            }
+
+            treeModel.reload()
+            expandAll()
+            if (selectedId != null) reselectTask(selectedId)
+        } finally {
+            rebuilding = false
+        }
+        // Reconcile the details pane once, after the tree is stable (no-op if the same task is still selected).
+        updateDetailsFromSelection()
     }
 
     private fun expandAll() {
@@ -241,13 +297,61 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         header.repaint()
     }
 
-    private fun updateDetailsFromSelection() {
+    private fun selectedTaskNode(): TaskNode? {
         val row = treeTable.selectedRow
-        val task = if (row < 0) null else {
-            val path = treeTable.tree.getPathForRow(row)
-            (path?.lastPathComponent as? DefaultMutableTreeNode)?.task()
+        if (row < 0) return null
+        val node = treeTable.tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode
+        return node?.userObject as? TaskNode
+    }
+
+    private fun reselectTask(taskId: String) {
+        val tree = treeTable.tree
+        for (row in 0 until tree.rowCount) {
+            val node = tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode
+            if ((node?.userObject as? TaskNode)?.task?.id == taskId) {
+                treeTable.selectionModel.setSelectionInterval(row, row)
+                return
+            }
         }
-        detailsPanel.show(task)
+    }
+
+    /**
+     * Shows the selected task in the details pane. Fields we already have render immediately; if the
+     * task carries no comments yet, they (and a fuller description) are fetched lazily via
+     * [TaskRepository.findTask] off the EDT — so the list load never pays for comments it may not need.
+     */
+    private fun updateDetailsFromSelection() {
+        if (rebuilding) return // ignore selection churn while the tree is being rebuilt
+        val node = selectedTaskNode()
+        val taskId = node?.task?.id
+        if (taskId == currentDetailTaskId) return // selection restored to the same task; nothing to do
+        currentDetailTaskId = taskId
+
+        val requestId = ++detailRequestId
+        if (node == null) {
+            detailsPanel.show(null)
+            return
+        }
+
+        val task = node.task
+        val repository = node.repository
+        val hasComments = task.comments.isNotEmpty()
+        detailsPanel.show(task, loadingComments = !hasComments)
+        if (hasComments) return // e.g. GitHub already loaded comments during the list fetch
+
+        AppExecutorUtil.getAppExecutorService().execute {
+            val full = try {
+                repository.findTask(task.id)
+            } catch (ce: ProcessCanceledException) {
+                return@execute
+            } catch (ex: Exception) {
+                null
+            }
+            ApplicationManager.getApplication().invokeLater {
+                if (requestId != detailRequestId) return@invokeLater // selection moved on
+                detailsPanel.show(full ?: task, loadingComments = false)
+            }
+        }
     }
 
     /** Renders the tree column (ID): server name for group rows, presentable id for task rows. */
@@ -266,10 +370,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 is ServerNode -> {
                     icon = obj.repository.icon
                     append(obj.repository.presentableName, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
-                    if (obj.error != null) {
-                        append("  (${obj.error})", SimpleTextAttributes.ERROR_ATTRIBUTES)
-                    } else {
-                        append("  (${node.childCount})", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                    when {
+                        obj.loading -> append("  (loading…)", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                        obj.error != null -> append("  (${obj.error})", SimpleTextAttributes.ERROR_ATTRIBUTES)
+                        else -> append("  (${node.childCount})", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                     }
                 }
 
@@ -382,7 +486,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                         if (selected) SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, selectionForeground)
                         else SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES
                     spanComponent.append(obj.repository.presentableName, nameAttrs)
-                    val suffix = obj.error?.let { "  ($it)" } ?: "  (${node.childCount})"
+                    val suffix = when {
+                        obj.loading -> "  (loading…)"
+                        obj.error != null -> "  (${obj.error})"
+                        else -> "  (${node.childCount})"
+                    }
                     val suffixAttrs = when {
                         selected -> SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, selectionForeground)
                         obj.error != null -> SimpleTextAttributes.ERROR_ATTRIBUTES
