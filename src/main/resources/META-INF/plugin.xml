@@ -12,6 +12,7 @@
     <depends>com.intellij.tasks</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Tasker" displayType="BALLOON"/>
         <toolWindow id="Tasks"
                     anchor="bottom"
                     icon="AllIcons.Toolwindows.ToolWindowChanges"

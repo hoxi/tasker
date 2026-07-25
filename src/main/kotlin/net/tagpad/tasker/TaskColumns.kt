@@ -3,6 +3,7 @@ package net.tagpad.tasker
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
+import com.intellij.tasks.TaskState
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
 import com.intellij.util.ui.ColumnInfo
 import java.text.SimpleDateFormat
@@ -15,8 +16,29 @@ internal class TaskNode(val task: Task, val repository: TaskRepository)
 
 internal fun DefaultMutableTreeNode.task(): Task? = (userObject as? TaskNode)?.task
 
-internal fun statusText(task: Task): String =
-    task.state?.presentableName ?: if (task.isClosed) "Closed" else "Open"
+/**
+ * The state as the tracker itself names it.
+ *
+ * [Task.getState] returns the [TaskState] enum, which flattens anything it doesn't recognise to
+ * [TaskState.OTHER] — and YouTrack routes most of its board there, including "In Progress", whose
+ * uppercased form has a space where the enum has an underscore. Taking the enum's presentable name at
+ * face value would label most YouTrack issues "Other".
+ *
+ * So prefer the tracker's own state property when it exposes one; the enum is only a fallback.
+ */
+internal fun statusText(task: Task): String {
+    trackerStateName(task)?.let { return it }
+    val state = task.state
+    if (state != null && state != TaskState.OTHER) return state.presentableName
+    return if (task.isClosed) "Closed" else "Open"
+}
+
+/** Matched case-insensitively: YouTrack keys this "state", but the property name isn't standardised. */
+private fun trackerStateName(task: Task): String? =
+    task.customProperties.entries
+        .firstOrNull { it.key.equals("state", ignoreCase = true) }
+        ?.value?.value
+        ?.takeIf { it.isNotBlank() }
 
 private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm")
 
