@@ -4,6 +4,7 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
+import com.intellij.tasks.TaskRepository
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
@@ -25,6 +26,8 @@ import java.awt.GridLayout
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import javax.swing.BorderFactory
+import javax.swing.Box
+import javax.swing.BoxLayout
 import javax.swing.JEditorPane
 import javax.swing.JPanel
 import javax.swing.JTextArea
@@ -41,7 +44,14 @@ import javax.swing.text.View
  * very same [StatusBadge] the list paints, and Swing's HTML renderer has no rounded corners. Only the
  * body — free-form issue text — goes through the editor pane.
  */
-class TaskDetailsPanel : JPanel(BorderLayout()) {
+class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout()) {
+
+    /** Raised when the user picks one of the header's edit actions; the owner does the work. */
+    interface EditRequests {
+        fun renameTask()
+        fun editDescription()
+        fun addComment()
+    }
 
     private val idLabel = JBLabel().apply {
         font = JBFont.small().asBold()
@@ -83,6 +93,21 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
         add(updatedField)
     }
 
+    private val renameAction = EditActionLink("Rename") { edits.renameTask() }
+    private val descriptionAction = EditActionLink("Edit description") { edits.editDescription() }
+    private val commentAction = EditActionLink("Add comment") { edits.addComment() }
+
+    private val actionsRow = JPanel().apply {
+        isOpaque = false
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        add(renameAction)
+        add(Box.createHorizontalStrut(JBUI.scale(14)))
+        add(descriptionAction)
+        add(Box.createHorizontalStrut(JBUI.scale(14)))
+        add(commentAction)
+        add(Box.createHorizontalGlue())
+    }
+
     private val header = JPanel(GridBagLayout()).apply {
         isOpaque = false
         border = BorderFactory.createCompoundBorder(
@@ -101,6 +126,7 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
         add(summaryLabel, c.apply { gridx = 0; gridy = 1; gridwidth = 2; weightx = 1.0; anchor = GridBagConstraints.WEST; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(6) })
         add(statusBadge, c.apply { gridy = 2; fill = GridBagConstraints.NONE; insets = JBUI.insetsTop(10) })
         add(metaRow, c.apply { gridy = 3; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(14) })
+        add(actionsRow, c.apply { gridy = 4 })
     }
 
     private val placeholder = JBLabel("Select a task to see its details.", SwingConstants.CENTER).apply {
@@ -133,13 +159,14 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
         show(null)
     }
 
-    fun show(task: Task?, loadingComments: Boolean = false) {
+    fun show(task: Task?, repository: TaskRepository? = null, loadingComments: Boolean = false) {
         if (task == null) {
             issueUrl = null
             cardLayout.show(cards, CARD_EMPTY)
             return
         }
 
+        updateEditActions(task, repository)
         idLabel.text = task.presentableId
         issueUrl = task.issueUrl?.takeIf { it.isNotBlank() }
         browserLink.isVisible = issueUrl != null
@@ -155,6 +182,24 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
         // The badge's width and the summary's height both depend on the new text.
         header.revalidate()
         header.repaint()
+    }
+
+    /**
+     * An action is offered only when the provider has an adapter *and* that adapter can address this
+     * particular task; the tooltip distinguishes the two, since "GitHub can't do this" and "this issue
+     * has no usable url" are different problems for the user.
+     */
+    private fun updateEditActions(task: Task, repository: TaskRepository?) {
+        val editor = repository?.let(TaskEditors::forRepository)
+        // Distinguish the two failure modes: the provider can't do this at all, versus it can but this
+        // particular task isn't addressable (no issue url, or no token configured).
+        val reason =
+            if (editor == null) "Not supported for ${repository?.repositoryType?.name ?: "this server"}"
+            else "Not available for this task"
+
+        renameAction.setState(editor?.canRename(task) == true, reason)
+        descriptionAction.setState(editor?.canEditDescription(task) == true, reason)
+        commentAction.setState(editor?.canComment(task) == true, reason)
     }
 
     private fun renderBody(task: Task, loadingComments: Boolean): String {
@@ -253,6 +298,38 @@ class TaskDetailsPanel : JPanel(BorderLayout()) {
     private fun esc(s: String): String = StringUtil.escapeXmlEntities(s)
 
     private fun hex(color: Color): String = "#" + ColorUtil.toHex(color)
+
+    /**
+     * One header edit action, as a link inside a wrapper panel.
+     *
+     * Two Swing details force this shape. [ActionLink.autoHideOnDisable] defaults to true, so a
+     * disabled link would vanish instead of greying out — the opposite of what we want, since an
+     * unsupported action should still advertise that it exists. And Swing withholds mouse events from
+     * disabled components, so a tooltip set on the greyed link itself would never be shown; the
+     * enabled wrapper carries it instead.
+     */
+    private class EditActionLink(text: String, action: () -> Unit) : JPanel(BorderLayout()) {
+
+        private val link = ActionLink(text) { action() }.apply {
+            autoHideOnDisable = false
+            font = JBFont.small()
+            // Leaving the foreground unset is deliberate: DefaultLinkButtonUI only substitutes the
+            // themed disabled color when the button has no explicit foreground of its own.
+        }
+
+        init {
+            isOpaque = false
+            add(link, BorderLayout.CENTER)
+        }
+
+        fun setState(enabled: Boolean, disabledReason: String) {
+            link.isEnabled = enabled
+            toolTipText = if (enabled) null else disabledReason
+        }
+
+        /** A panel's maximum size is unbounded, which would let BoxLayout stretch the links apart. */
+        override fun getMaximumSize(): Dimension = preferredSize
+    }
 
     /** A caption above its value — the shape used for the Created / Updated columns. */
     private class MetaField(caption: String) : JPanel(BorderLayout(0, JBUI.scale(2))) {

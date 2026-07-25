@@ -7,14 +7,21 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task as ProgressTask
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.tasks.CustomTaskState
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.JBIntSpinner
 import com.intellij.ui.OnePixelSplitter
@@ -79,7 +86,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private val root = DefaultMutableTreeNode()
     private val treeModel = ListTreeTableModelOnColumns(root, columns)
     private val treeTable = SpanningTreeTable(treeModel)
-    private val detailsPanel = TaskDetailsPanel()
+    private val detailsPanel = TaskDetailsPanel(EditHandler())
 
     private var cache: List<ServerGroup> = emptyList()
     private var groupByServer: Boolean = true
@@ -129,6 +136,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         treeTable.selectionModel.addListSelectionListener { e ->
             if (!e.valueIsAdjusting) updateDetailsFromSelection()
         }
+        treeTable.addMouseListener(object : MouseAdapter() {
+            // Which of the two carries the popup trigger is platform-dependent, so check both.
+            override fun mousePressed(e: MouseEvent) = maybeShowStateMenu(e)
+            override fun mouseReleased(e: MouseEvent) = maybeShowStateMenu(e)
+        })
         setColumnWidths()
 
         val splitter = OnePixelSplitter(false, 0.6f).apply {
@@ -363,15 +375,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
         val resolved = detailCache[key] ?: task.takeIf { it.comments.isNotEmpty() }?.also { detailCache[key] = it }
         if (resolved != null) {
-            detailsPanel.show(resolved, loadingComments = false)
+            detailsPanel.show(resolved, repository, loadingComments = false)
             return
         }
 
         // Render the fields we already have straight away, but stay quiet about the fetch for a beat:
         // a server that answers within the grace period renders once, with no label flashing in between.
-        detailsPanel.show(task, loadingComments = false)
+        detailsPanel.show(task, repository, loadingComments = false)
         loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
-            if (requestId == detailRequestId) detailsPanel.show(task, loadingComments = true)
+            if (requestId == detailRequestId) detailsPanel.show(task, repository, loadingComments = true)
         }.apply {
             isRepeats = false
             start()
@@ -391,7 +403,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (full != null) detailCache[key] = full
                 if (requestId != detailRequestId) return@invokeLater // selection moved on; its own timer now owns the pane
                 cancelLoadingLabel()
-                detailsPanel.show(full ?: task, loadingComments = false)
+                detailsPanel.show(full ?: task, repository, loadingComments = false)
             }
         }
     }
@@ -400,6 +412,213 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private fun cancelLoadingLabel() {
         loadingLabelTimer?.stop()
         loadingLabelTimer = null
+    }
+
+    private fun maybeShowStateMenu(e: MouseEvent) {
+        if (!e.isPopupTrigger) return
+        val row = treeTable.rowAtPoint(e.point)
+        if (row < 0) return
+        // Right-clicking outside the current selection acts on the row under the cursor, as elsewhere.
+        if (!treeTable.selectionModel.isSelectedIndex(row)) treeTable.selectionModel.setSelectionInterval(row, row)
+        val node = selectedTaskNode() ?: return // server group rows have no state to transition
+        showStateMenu(node, RelativePoint(e))
+    }
+
+    /**
+     * Offers the states this task can move to, using the platform's own support: [TaskRepository.STATE_UPDATING]
+     * says whether the server can do it at all, and [TaskRepository.getAvailableTaskStates] asks it which
+     * transitions are legal from here — so a Jira workflow only ever offers the steps it actually permits.
+     *
+     * That query hits the network, so it runs off the EDT and the popup opens once it answers.
+     */
+    private fun showStateMenu(node: TaskNode, at: RelativePoint) {
+        val task = node.task
+        val repository = node.repository
+
+        if (!task.isIssue || !repository.isSupported(TaskRepository.STATE_UPDATING)) {
+            val provider = repository.repositoryType?.name ?: "this server"
+            showTaskStatePopup(listOf(StateMenuItem.Message("Status changes aren't supported for $provider")), null, at) {}
+            return
+        }
+
+        ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, "Fetching available task states…", true) {
+            private var states: List<CustomTaskState> = emptyList()
+            private var failure: Exception? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                states = try {
+                    repository.getAvailableTaskStates(task).toList()
+                } catch (ce: ProcessCanceledException) {
+                    throw ce
+                } catch (ex: Exception) {
+                    failure = ex
+                    emptyList()
+                }
+            }
+
+            override fun onSuccess() {
+                val error = failure
+                val items = when {
+                    error != null -> listOf(StateMenuItem.Message(error.message ?: "Could not load task states"))
+                    states.isEmpty() -> listOf(StateMenuItem.Message("No states available for this task"))
+                    else -> states.map(StateMenuItem::State)
+                }
+                showTaskStatePopup(items, statusText(task), at) { state ->
+                    applyWrite(repository, task, "Updating status…") { repository.setTaskState(task, state) }
+                }
+            }
+        })
+    }
+
+    /** Turns the details pane's edit actions into server writes. */
+    private inner class EditHandler : TaskDetailsPanel.EditRequests {
+
+        override fun renameTask() = edit(
+            dialogTitle = "Rename Task",
+            label = "Summary:",
+            initialText = { _, task -> task.summary },
+            multiline = false,
+            allowBlank = false,
+            progressTitle = "Renaming task…",
+        ) { editor, task, text -> editor.rename(task, text) }
+
+        override fun editDescription() = edit(
+            dialogTitle = "Edit Description",
+            label = "Description:",
+            // Prefill through the editor, not the task: GitLab's Task reports no description even when
+            // the issue has one, so reading it from the task would turn a save into a silent wipe.
+            initialText = { editor, task -> editor.currentDescription(task) },
+            multiline = true,
+            allowBlank = true,
+            progressTitle = "Updating description…",
+        ) { editor, task, text -> editor.setDescription(task, text) }
+
+        override fun addComment() = edit(
+            dialogTitle = "Add Comment",
+            label = "Comment:",
+            initialText = { _, _ -> "" },
+            multiline = true,
+            allowBlank = false,
+            progressTitle = "Posting comment…",
+        ) { editor, task, text -> editor.addComment(task, text) }
+    }
+
+    /**
+     * Works out what to prefill, prompts, then applies the result off the EDT.
+     *
+     * The prefill runs in the background because deriving it can itself need a server read — GitLab has
+     * to fetch the description it never puts on the task. A failed read aborts before the dialog opens:
+     * a blank field would be indistinguishable from a blank value, and saving it would destroy the text
+     * on the server.
+     */
+    private fun edit(
+        dialogTitle: String,
+        label: String,
+        initialText: (TaskEditor, Task) -> String,
+        multiline: Boolean,
+        allowBlank: Boolean,
+        progressTitle: String,
+        apply: (TaskEditor, Task, String) -> Unit,
+    ) {
+        val node = selectedTaskNode() ?: return
+        val task = node.task
+        val repository = node.repository
+        val editor = TaskEditors.forRepository(repository) ?: return
+
+        ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, "Loading…", true) {
+            private var initial = ""
+            private var failure: Exception? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                initial = try {
+                    initialText(editor, task)
+                } catch (ce: ProcessCanceledException) {
+                    throw ce
+                } catch (ex: Exception) {
+                    failure = ex
+                    ""
+                }
+            }
+
+            override fun onSuccess() {
+                val error = failure
+                if (error != null) {
+                    notifyFailure(dialogTitle, error)
+                    return
+                }
+                val dialog = TaskTextInputDialog(project, dialogTitle, label, initial, multiline, allowBlank)
+                if (!dialog.showAndGet()) return
+                applyWrite(repository, task, progressTitle) { apply(editor, task, dialog.text) }
+            }
+        })
+    }
+
+    /**
+     * Runs a server write off the EDT, then re-reads the task so the pane and the tree both show the
+     * result. Shared by the detail edits and by status changes, which differ only in the write itself.
+     */
+    private fun applyWrite(repository: TaskRepository, task: Task, progressTitle: String, write: () -> Unit) {
+        ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, progressTitle, false) {
+            private var failure: Exception? = null
+            private var refreshed: Task? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                try {
+                    write()
+                } catch (ce: ProcessCanceledException) {
+                    throw ce
+                } catch (ex: Exception) {
+                    failure = ex
+                    return
+                }
+                refreshed = try {
+                    repository.findTask(task.id)
+                } catch (ex: Exception) {
+                    null // the write landed; only the re-read failed
+                }
+            }
+
+            override fun onSuccess() {
+                val error = failure
+                if (error != null) notifyFailure(progressTitle, error) else applyEdited(repository, task.id, refreshed)
+            }
+        })
+    }
+
+    private fun applyEdited(repository: TaskRepository, taskId: String, refreshed: Task?) {
+        val key = DetailKey(repository.url, taskId)
+        if (refreshed == null) {
+            detailCache.remove(key)
+            return
+        }
+
+        detailCache[key] = refreshed
+        cache = cache.map { group ->
+            if (group.repository !== repository || group.tasks.none { it.id == taskId }) {
+                group
+            } else {
+                ServerGroup(
+                    group.repository,
+                    group.tasks.map { if (it.id == taskId) refreshed else it },
+                    group.error,
+                    group.loading,
+                )
+            }
+        }
+        // The selection hasn't moved, so clear the guard or the pane would decline to re-render.
+        currentDetailTaskId = null
+        rebuild()
+    }
+
+    private fun notifyFailure(action: String, error: Exception) {
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup("Tasker")
+            .createNotification(
+                action.trimEnd('…'),
+                error.message ?: error.javaClass.simpleName,
+                NotificationType.ERROR,
+            )
+            .notify(project)
     }
 
     /** Renders the tree column (ID): server name for group rows, presentable id for task rows. */
