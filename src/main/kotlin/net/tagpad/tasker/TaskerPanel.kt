@@ -42,6 +42,7 @@ import javax.swing.JPanel
 import javax.swing.JTable
 import javax.swing.JTree
 import javax.swing.SwingConstants
+import javax.swing.Timer
 import javax.swing.table.DefaultTableColumnModel
 import javax.swing.table.JTableHeader
 import javax.swing.table.TableCellRenderer
@@ -71,6 +72,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val loading: Boolean = false,
     )
 
+    /** Cache key for a resolved task: ids are only unique within a server, so the url is part of the key. */
+    private data class DetailKey(val repositoryUrl: String?, val taskId: String)
+
     private val columns: Array<ColumnInfo<DefaultMutableTreeNode, *>> = taskerColumns()
     private val root = DefaultMutableTreeNode()
     private val treeModel = ListTreeTableModelOnColumns(root, columns)
@@ -90,6 +94,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var detailRequestId: Int = 0
     /** Task currently shown in the details pane; avoids redundant reloads when selection is restored. */
     private var currentDetailTaskId: String? = null
+
+    /**
+     * Tasks whose details (comments + full description) have already been resolved. Membership *is* the
+     * loaded-flag: `TaskRepository.findTask` does no caching of its own (it's abstract, and every
+     * implementation issues a live request), and an empty comment list is otherwise indistinguishable
+     * from "not fetched yet". Cleared by [refresh]. EDT-only.
+     */
+    private val detailCache = HashMap<DetailKey, Task>()
+
+    /** Pending deferred "Loading comments…" label, if a fetch is in flight. EDT-only. */
+    private var loadingLabelTimer: Timer? = null
     /** True while the tree is being rebuilt, so selection churn from reload() doesn't refetch details. */
     private var rebuilding: Boolean = false
 
@@ -97,6 +112,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val ID_COLUMN = 0
         const val STATUS_COLUMN = 1
         const val DEFAULT_LIMIT = 30
+
+        /** Grace period before admitting to a comment fetch; servers that answer inside it never flash the label. */
+        const val LOADING_LABEL_DELAY_MS = 200
     }
 
     init {
@@ -193,6 +211,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val limit = issueLimit
         val includeClosedNow = includeClosed
         val repositories = TaskManager.getManager(project).allRepositories.toList()
+        detailCache.clear() // an explicit refresh means the user wants fresh comments too
 
         // Seed the cache so configured servers show up immediately as "loading".
         cache = repositories.map { repo ->
@@ -316,9 +335,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Shows the selected task in the details pane. Fields we already have render immediately; if the
-     * task carries no comments yet, they (and a fuller description) are fetched lazily via
-     * [TaskRepository.findTask] off the EDT — so the list load never pays for comments it may not need.
+     * Shows the selected task in the details pane. Fields we already have render immediately; comments
+     * (and a fuller description) are fetched lazily via [TaskRepository.findTask] off the EDT — so the
+     * list load never pays for comments it may not need — and memoized in [detailCache] so revisiting a
+     * task is instant, including tasks that turn out to have no comments at all. A fetch only announces
+     * itself if it outlives [LOADING_LABEL_DELAY_MS].
      */
     private fun updateDetailsFromSelection() {
         if (rebuilding) return // ignore selection churn while the tree is being rebuilt
@@ -327,6 +348,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         if (taskId == currentDetailTaskId) return // selection restored to the same task; nothing to do
         currentDetailTaskId = taskId
 
+        cancelLoadingLabel() // whatever we show next supersedes any pending label
         val requestId = ++detailRequestId
         if (node == null) {
             detailsPanel.show(null)
@@ -335,9 +357,25 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         val task = node.task
         val repository = node.repository
-        val hasComments = task.comments.isNotEmpty()
-        detailsPanel.show(task, loadingComments = !hasComments)
-        if (hasComments) return // e.g. GitHub already loaded comments during the list fetch
+        val key = DetailKey(repository.url, task.id)
+
+        // Resolved already? Render straight away. Comments arriving with the list fetch (GitHub does this)
+        // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
+        val resolved = detailCache[key] ?: task.takeIf { it.comments.isNotEmpty() }?.also { detailCache[key] = it }
+        if (resolved != null) {
+            detailsPanel.show(resolved, loadingComments = false)
+            return
+        }
+
+        // Render the fields we already have straight away, but stay quiet about the fetch for a beat:
+        // a server that answers within the grace period renders once, with no label flashing in between.
+        detailsPanel.show(task, loadingComments = false)
+        loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
+            if (requestId == detailRequestId) detailsPanel.show(task, loadingComments = true)
+        }.apply {
+            isRepeats = false
+            start()
+        }
 
         AppExecutorUtil.getAppExecutorService().execute {
             val full = try {
@@ -348,10 +386,20 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 null
             }
             ApplicationManager.getApplication().invokeLater {
-                if (requestId != detailRequestId) return@invokeLater // selection moved on
+                // Cache before the staleness check: the result is still valid even if the selection moved on.
+                // Failures aren't cached, so they're retried on the next visit rather than sticking.
+                if (full != null) detailCache[key] = full
+                if (requestId != detailRequestId) return@invokeLater // selection moved on; its own timer now owns the pane
+                cancelLoadingLabel()
                 detailsPanel.show(full ?: task, loadingComments = false)
             }
         }
+    }
+
+    /** Stops any pending "Loading comments…" label so it can't fire over content that has already arrived. */
+    private fun cancelLoadingLabel() {
+        loadingLabelTimer?.stop()
+        loadingLabelTimer = null
     }
 
     /** Renders the tree column (ID): server name for group rows, presentable id for task rows. */
