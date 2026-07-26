@@ -3,6 +3,7 @@ package net.tagpad.tasker
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionGroup
+import com.intellij.openapi.actionSystem.ActionGroupWrapper
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -143,6 +144,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private companion object {
         const val ID_COLUMN = 0
         const val STATUS_COLUMN = 1
+
+        /** The Task Management plugin's own Tools menu group, reused as a toolbar dropdown. */
+        const val TASKS_AND_CONTEXTS_GROUP = "tasks.and.contexts"
         const val DEFAULT_LIMIT = 30
 
         /** Grace period before admitting to a comment fetch; servers that answer inside it never flash the label. */
@@ -223,8 +227,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 refresh() // closed issues aren't in the cache — refetch from the servers
             }
         })
-        group.addSeparator()
-        group.add(TasksAndContextsGroup())
+        // Registered by the bundled Task Management plugin, which this plugin depends on outright — so
+        // the only way this misses is a rename on JetBrains' side, and then the button simply isn't there.
+        (ActionManager.getInstance().getAction(TASKS_AND_CONTEXTS_GROUP) as? ActionGroup)?.let { tasksMenu ->
+            group.addSeparator()
+            group.add(TasksAndContextsGroup(tasksMenu))
+        }
 
         val actionToolbar = ActionManager.getInstance().createActionToolbar("TaskerToolbar", group, true)
         actionToolbar.targetComponent = treeTable
@@ -254,31 +262,19 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Toolbar shortcut to the Task Management plugin's own "Tasks & Contexts" menu, the one that
      * normally only lives under Tools.
      *
-     * The children are looked up when the menu opens rather than copied in, so switching tasks, saving
-     * and loading contexts stay exactly whatever that plugin defines them to be — this is a second way
-     * in, not a reimplementation.
+     * [ActionGroupWrapper] rather than a group that fetches the children itself: reading someone else's
+     * children means calling [ActionGroup.getChildren], which is marked `@ApiStatus.OverrideOnly`, and
+     * the wrapper routes it through the platform's own machinery instead. Everything in the menu stays
+     * whatever that plugin registers — this is a second way in, not a reimplementation.
      */
-    private class TasksAndContextsGroup : ActionGroup(
-        "Tasks & Contexts",
-        "Open the Task Management plugin's Tasks and Contexts menu",
-        AllIcons.Toolwindows.Task,
-    ) {
+    private class TasksAndContextsGroup(delegate: ActionGroup) : ActionGroupWrapper(delegate) {
         init {
+            // After the superclass has copied the delegate's presentation, so these win. The text is
+            // left alone when the delegate has one: it is the same menu, already localized.
             isPopup = true
+            templatePresentation.icon = AllIcons.Toolwindows.Task
+            if (templatePresentation.text.isNullOrBlank()) templatePresentation.text = "Tasks & Contexts"
         }
-
-        override fun getActionUpdateThread() = ActionUpdateThread.EDT
-
-        /** Greyed rather than hidden: a button that silently vanishes is harder to explain than a dead one. */
-        override fun update(e: AnActionEvent) {
-            e.presentation.isEnabled = delegate() != null
-        }
-
-        override fun getChildren(e: AnActionEvent?): Array<AnAction> = delegate()?.getChildren(e) ?: EMPTY_ARRAY
-
-        /** Registered by the bundled Task Management plugin, which this plugin already depends on. */
-        private fun delegate(): ActionGroup? =
-            ActionManager.getInstance().getAction("tasks.and.contexts") as? ActionGroup
     }
 
     /**
