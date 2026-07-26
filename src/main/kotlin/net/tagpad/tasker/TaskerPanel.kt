@@ -18,7 +18,9 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task as ProgressTask
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.CustomTaskState
+import com.intellij.tasks.actions.OpenTaskDialog
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
@@ -455,24 +457,29 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         if (row < 0) return
         // Right-clicking outside the current selection acts on the row under the cursor, as elsewhere.
         if (!treeTable.selectionModel.isSelectedIndex(row)) treeTable.selectionModel.setSelectionInterval(row, row)
-        val node = selectedTaskNode() ?: return // server group rows have no state to transition
-        showStateMenu(node, RelativePoint(e))
+        val node = selectedTaskNode() ?: return // server group rows have no task to act on
+        showTaskMenu(node, RelativePoint(e))
     }
 
     /**
-     * Offers the states this task can move to, using the platform's own support: [TaskRepository.STATE_UPDATING]
-     * says whether the server can do it at all, and [TaskRepository.getAvailableTaskStates] asks it which
-     * transitions are legal from here — so a Jira workflow only ever offers the steps it actually permits.
+     * Offers switching to this task, then the states it can move to.
      *
-     * That query hits the network, so it runs off the EDT and the popup opens once it answers.
+     * The states come from the platform's own support: [TaskRepository.STATE_UPDATING] says whether the
+     * server can do it at all, and [TaskRepository.getAvailableTaskStates] asks it which transitions are
+     * legal from here — so a Jira workflow only ever offers the steps it actually permits.
+     *
+     * That query hits the network, so it runs off the EDT and the popup opens once it answers. Switching
+     * needs no such round trip, but it shares the popup, so it waits with everything else.
      */
-    private fun showStateMenu(node: TaskNode, at: RelativePoint) {
+    private fun showTaskMenu(node: TaskNode, at: RelativePoint) {
         val task = node.task
         val repository = node.repository
+        val switchItem = TaskMenuItem.Switch("Switch to ${switchTarget(task)}")
 
         if (!task.isIssue || !repository.isSupported(TaskRepository.STATE_UPDATING)) {
             val provider = repository.repositoryType?.name ?: "this server"
-            showTaskStatePopup(listOf(StateMenuItem.Message("Status changes aren't supported for $provider")), null, at) {}
+            val items = listOf(switchItem, TaskMenuItem.Message("Status changes aren't supported for $provider"))
+            showTaskContextMenu(items, null, at, { switchToTask(task) }) {}
             return
         }
 
@@ -493,16 +500,34 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
             override fun onSuccess() {
                 val error = failure
-                val items = when {
-                    error != null -> listOf(StateMenuItem.Message(error.message ?: "Could not load task states"))
-                    states.isEmpty() -> listOf(StateMenuItem.Message("No states available for this task"))
-                    else -> states.map(StateMenuItem::State)
+                val stateItems = when {
+                    error != null -> listOf(TaskMenuItem.Message(error.message ?: "Could not load task states"))
+                    states.isEmpty() -> listOf(TaskMenuItem.Message("No states available for this task"))
+                    else -> states.map(TaskMenuItem::State)
                 }
-                showTaskStatePopup(items, statusText(task), at) { state ->
+                showTaskContextMenu(listOf(switchItem) + stateItems, statusText(task), at, { switchToTask(task) }) { state ->
                     applyWrite(repository, task, "Updating status…") { repository.setTaskState(task, state) }
                 }
             }
         })
+    }
+
+    /**
+     * Hands the task to the Task Management plugin exactly the way its own "Open Task" chooser does: one
+     * that is already local is activated outright, while an unknown one goes through the Open Task
+     * dialog — which is where the changelist, branch and context options live, and is why this doesn't
+     * just call [TaskManager.activateTask] for both.
+     */
+    private fun switchToTask(task: Task) {
+        val manager = TaskManager.getManager(project)
+        val local = manager.findTask(task.id)
+        if (local != null) manager.activateTask(local, true) else OpenTaskDialog(project, task).show()
+    }
+
+    /** Enough of the task to recognise the row that was right-clicked, without widening the popup. */
+    private fun switchTarget(task: Task): String {
+        val summary = StringUtil.shortenTextWithEllipsis(task.summary.orEmpty().trim(), 60, 0)
+        return if (summary.isEmpty()) task.presentableId else "${task.presentableId}: $summary"
     }
 
     /** Turns the details pane's inline edits into server writes. */
