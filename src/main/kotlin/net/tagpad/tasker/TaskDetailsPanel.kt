@@ -2,6 +2,7 @@ package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
 import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
@@ -21,13 +22,16 @@ import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Color
+import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Font
+import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.GridLayout
 import java.awt.Rectangle
 import java.awt.event.ActionEvent
+import java.awt.event.ActionListener
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.KeyEvent
@@ -35,6 +39,7 @@ import javax.swing.AbstractAction
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
+import javax.swing.Icon
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JEditorPane
@@ -46,6 +51,8 @@ import javax.swing.SwingConstants
 import javax.swing.event.HyperlinkEvent
 import javax.swing.plaf.basic.BasicTextUI
 import javax.swing.text.View
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Right-hand pane for the selected task: a fixed header (id, summary, status, dates) above a scrolling
@@ -92,6 +99,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     /** The title. Deliberately the platform heading font, so it reads as a heading and not as a field. */
     private val summaryText = WrappingText(JBFont.h2())
     private val summaryPen = PenButton("Rename") { beginSummaryEdit() }
+    private val titleRow = TitleRow(summaryText, summaryPen)
 
     private val statusBadge = StatusBadge()
     private val createdField = MetaField("Created")
@@ -118,11 +126,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         }
         add(idLabel, c)
         add(browserLink, c.apply { gridx = 1; weightx = 0.0; anchor = GridBagConstraints.EAST; fill = GridBagConstraints.NONE })
-        add(summaryText, c.apply { gridx = 0; gridy = 1; weightx = 1.0; anchor = GridBagConstraints.WEST; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(6) })
-        // North-east so the pen sits level with the summary's first line rather than floating in the
-        // middle of a title that has wrapped to three.
-        add(summaryPen, c.apply { gridx = 1; weightx = 0.0; anchor = GridBagConstraints.NORTHEAST; fill = GridBagConstraints.NONE })
-        add(statusBadge, c.apply { gridx = 0; gridy = 2; gridwidth = 2; anchor = GridBagConstraints.WEST; insets = JBUI.insetsTop(10) })
+        add(titleRow, c.apply { gridx = 0; gridy = 1; gridwidth = 2; weightx = 1.0; anchor = GridBagConstraints.WEST; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(6) })
+        add(statusBadge, c.apply { gridy = 2; fill = GridBagConstraints.NONE; insets = JBUI.insetsTop(10) })
         add(metaRow, c.apply { gridy = 3; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(14) })
     }
 
@@ -203,7 +208,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         border = JBUI.Borders.empty(4)
     }
 
-    private val sendButton = InplaceButton("Add comment", AllIcons.Chooser.Right) { sendComment() }
+    private val sendButton = HoverButton("Add comment", SEND_ICON) { sendComment() }
 
     private val composer = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
         isOpaque = false
@@ -526,15 +531,45 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     /**
+     * An icon button that admits to being one.
+     *
+     * [InplaceButton] offers no hover feedback out of the box: its `paintHover` hook is empty, and the
+     * single-icon constructor registers the same icon for hovered as for regular, so nothing changes
+     * under the pointer. The platform's own hand cursor for it is commented out in the source, too.
+     */
+    private class HoverButton(tooltip: String, icon: Icon, action: () -> Unit) :
+        InplaceButton(tooltip, icon, ActionListener { action() }) {
+
+        init {
+            // Breathing room around the 16px glyph, so the highlight reads as a button rather than as a
+            // box drawn tight around the icon. InplaceButton centers its icon in whatever size the
+            // component ends up with, so growing it is all that is needed.
+            val pad = JBUI.scale(6)
+            preferredSize = Dimension(icon.iconWidth + pad, icon.iconHeight + pad)
+            // Routed through setEnabled rather than assigning the cursor here, so the starting state and
+            // every later change come from one place.
+            isEnabled = true
+        }
+
+        override fun paintHover(g: Graphics) = paintHover(g, JBUI.CurrentTheme.ActionButton.hoverBackground())
+
+        /** Paired with the enabled state so a greyed-out icon doesn't keep promising a click. */
+        override fun setEnabled(enabled: Boolean) {
+            super.setEnabled(enabled)
+            cursor = Cursor.getPredefinedCursor(if (enabled) Cursor.HAND_CURSOR else Cursor.DEFAULT_CURSOR)
+        }
+    }
+
+    /**
      * A pen, in a wrapper panel.
      *
-     * [InplaceButton] paints a greyed icon when disabled on its own, but Swing withholds mouse events
-     * from disabled components, so a tooltip set on the button itself would never appear. The enabled
-     * wrapper carries it.
+     * [HoverButton] greys its icon when disabled on its own, but Swing withholds mouse events from
+     * disabled components, so a tooltip set on the button itself would never appear. The enabled wrapper
+     * carries it.
      */
     private class PenButton(private val label: String, action: () -> Unit) : JPanel(BorderLayout()) {
 
-        private val button = InplaceButton(label, AllIcons.Actions.Edit) { action() }
+        private val button = HoverButton(label, AllIcons.Actions.Edit, action)
 
         init {
             isOpaque = false
@@ -548,6 +583,55 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** A panel's maximum size is unbounded, which would let BoxLayout stretch the pen. */
         override fun getMaximumSize(): Dimension = preferredSize
+    }
+
+    /**
+     * The title, with its pen tucked against the end of the text.
+     *
+     * A wrapping text area claims every pixel of the column it is handed, so under an ordinary layout
+     * the pen would sit against the far edge of the header however short the title is. Measure the text
+     * unwrapped instead and give it the whole column only when it needs one: a long title still wraps,
+     * and its pen still ends up top right, level with the first line.
+     */
+    private class TitleRow(private val text: WrappingText, private val pen: JComponent) : JPanel() {
+
+        private val gap: Int get() = JBUI.scale(6)
+
+        init {
+            layout = null
+            isOpaque = false
+            add(text)
+            add(pen)
+        }
+
+        override fun doLayout() {
+            val textWidth = textWidth(width)
+            val penSize = pen.preferredSize
+            text.setBounds(0, 0, textWidth, text.preferredHeightAt(textWidth))
+            pen.setBounds(textWidth + gap, penTop(penSize.height), penSize.width, penSize.height)
+        }
+
+        override fun getPreferredSize(): Dimension {
+            val penSize = pen.preferredSize
+            if (width <= 0) {
+                val natural = text.naturalWidth()
+                return Dimension(natural + gap + penSize.width, max(text.preferredHeightAt(natural), penSize.height))
+            }
+            val textWidth = textWidth(width)
+            return Dimension(width, max(text.preferredHeightAt(textWidth), penTop(penSize.height) + penSize.height))
+        }
+
+        /** Only as wide as the text actually needs, up to whatever is left once the pen has its place. */
+        private fun textWidth(available: Int): Int {
+            val room = max(JBUI.scale(60), available - gap - pen.preferredSize.width)
+            // While typing, the field keeps the whole column: a box creeping wider a character at a time
+            // would be more distracting than one that simply looks like a field from the start.
+            return if (text.isEditable) room else min(text.naturalWidth(), room)
+        }
+
+        /** Centered on the title's first line, so a title that wraps doesn't drag the pen down with it. */
+        private fun penTop(penHeight: Int): Int =
+            text.insets.top + max(0, (text.getFontMetrics(text.font).height - penHeight) / 2)
     }
 
     /**
@@ -640,10 +724,23 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         }
 
         override fun getPreferredSize(): Dimension {
-            val rootView = (ui as? BasicTextUI)?.getRootView(this)
-            if (width <= 0 || rootView == null) return super.getPreferredSize()
-            rootView.setSize(width.toFloat(), Float.MAX_VALUE)
-            return Dimension(width, rootView.getPreferredSpan(View.Y_AXIS).toInt() + insets.top + insets.bottom)
+            if (width <= 0) return super.getPreferredSize()
+            return Dimension(width, preferredHeightAt(width))
+        }
+
+        /** The height the text needs at [w] pixels wide — answerable before it has ever been that wide. */
+        fun preferredHeightAt(w: Int): Int {
+            val rootView = (ui as? BasicTextUI)?.getRootView(this) ?: return super.getPreferredSize().height
+            rootView.setSize(w.toFloat(), Float.MAX_VALUE)
+            return rootView.getPreferredSpan(View.Y_AXIS).toInt() + insets.top + insets.bottom
+        }
+
+        /** The width the text would take if nothing wrapped it. */
+        fun naturalWidth(): Int {
+            val metrics = getFontMetrics(font)
+            // A couple of pixels of slack: FontMetrics rounds per string, and rounding short by one would
+            // wrap the last word onto a line of its own.
+            return text.lineSequence().maxOf(metrics::stringWidth) + insets.left + insets.right + JBUI.scale(2)
         }
 
         /**
@@ -661,6 +758,13 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         const val AVATAR_SIZE = 20
 
         private val IMG_SRC = Regex("""<img[^>]*\ssrc\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
+        /**
+         * The composer's paper plane. Ships with the plugin — AllIcons has no send icon, only navigation
+         * arrows, which read as "next" rather than "post this". The `_dark` companion file is picked up
+         * by name, so this one constant covers both themes.
+         */
+        val SEND_ICON: Icon = IconLoader.getIcon("/icons/send.svg", TaskDetailsPanel::class.java)
 
         /** Resolved per call rather than cached, so captions re-color on a theme switch. */
         fun muted(): Color = NamedColorUtil.getInactiveTextColor()

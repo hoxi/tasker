@@ -15,7 +15,7 @@
         <notificationGroup id="Tasker" displayType="BALLOON"/>
         <toolWindow id="Tasks"
                     anchor="bottom"
-                    icon="AllIcons.Toolwindows.ToolWindowChanges"
+                    icon="/icons/toolWindowTasker.svg"
                     factoryClass="net.tagpad.tasker.TaskerToolWindowFactory"/>
     </extensions>
 </idea-plugin>

@@ -1,6 +1,7 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -189,6 +190,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 refresh() // closed issues aren't in the cache — refetch from the servers
             }
         })
+        group.addSeparator()
+        group.add(TasksAndContextsGroup())
+
         val actionToolbar = ActionManager.getInstance().createActionToolbar("TaskerToolbar", group, true)
         actionToolbar.targetComponent = treeTable
 
@@ -211,6 +215,37 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             add(actionToolbar.component, BorderLayout.WEST)
             add(limitPanel, BorderLayout.EAST)
         }
+    }
+
+    /**
+     * Toolbar shortcut to the Task Management plugin's own "Tasks & Contexts" menu, the one that
+     * normally only lives under Tools.
+     *
+     * The children are looked up when the menu opens rather than copied in, so switching tasks, saving
+     * and loading contexts stay exactly whatever that plugin defines them to be — this is a second way
+     * in, not a reimplementation.
+     */
+    private class TasksAndContextsGroup : ActionGroup(
+        "Tasks & Contexts",
+        "Open the Task Management plugin's Tasks and Contexts menu",
+        AllIcons.Toolwindows.Task,
+    ) {
+        init {
+            isPopup = true
+        }
+
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        /** Greyed rather than hidden: a button that silently vanishes is harder to explain than a dead one. */
+        override fun update(e: AnActionEvent) {
+            e.presentation.isEnabled = delegate() != null
+        }
+
+        override fun getChildren(e: AnActionEvent?): Array<AnAction> = delegate()?.getChildren(e) ?: EMPTY_ARRAY
+
+        /** Registered by the bundled Task Management plugin, which this plugin already depends on. */
+        private fun delegate(): ActionGroup? =
+            ActionManager.getInstance().getAction("tasks.and.contexts") as? ActionGroup
     }
 
     /**
