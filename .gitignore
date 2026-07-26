@@ -5,6 +5,13 @@ build/
 !**/src/test/**/build/
 .kotlin
 
+### Gradle IntelliJ Platform plugin ###
+# Downloaded IDE and the runIde sandbox.
+.intellijPlatform/
+
+### Claude Code ###
+.claude/
+
 ### IntelliJ IDEA ###
 .idea/modules.xml
 .idea/jarRepositories.xml
