@@ -1,6 +1,7 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -21,7 +22,9 @@ import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.CustomTaskState
 import com.intellij.tasks.actions.OpenTaskDialog
+import com.intellij.tasks.LocalTask
 import com.intellij.tasks.Task
+import com.intellij.tasks.TaskListener
 import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
 import com.intellij.ui.awt.RelativePoint
@@ -73,7 +76,7 @@ private class PinnedFirstColumnModel : DefaultTableColumnModel() {
  * with a details pane on the right. Tasks can be grouped per server or shown as one merged list;
  * clicking a column header sorts — within each server group when grouped, globally when flat.
  */
-class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, true) {
+class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, true), Disposable {
 
     private class ServerGroup(
         val repository: TaskRepository,
@@ -113,8 +116,27 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      */
     private val detailCache = HashMap<DetailKey, Task>()
 
+    /**
+     * Adapter-fetched properties, keyed like [detailCache] and cleared alongside it.
+     *
+     * Kept separate rather than folded into the cached task because the two are resolved independently:
+     * GitHub ships comments with the list fetch, which short-circuits the detail request entirely, but
+     * says nothing about the assignee. Only successes land here, so a failed read is retried on the next
+     * visit instead of sticking as a permanent blank. EDT-only.
+     */
+    private val propertyCache = HashMap<DetailKey, List<TaskProperty>>()
+
     /** Pending deferred "Loading comments…" label, if a fetch is in flight. EDT-only. */
     private var loadingLabelTimer: Timer? = null
+
+    /**
+     * Whether the pane is currently admitting to a comment fetch.
+     *
+     * Late-arriving properties re-render the pane, and they have no idea whether the comments they are
+     * rendering beside have landed yet. Without this they would quietly replace "Loading…" with "No
+     * comments." for as long as the real fetch took. EDT-only.
+     */
+    private var showingLoadingComments: Boolean = false
     /** True while the tree is being rebuilt, so selection churn from reload() doesn't refetch details. */
     private var rebuilding: Boolean = false
 
@@ -128,6 +150,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     init {
+        // Which row is bold depends on state the platform owns, so nothing here would notice it changing
+        // — not even a switch made from our own context menu, which goes straight to the TaskManager.
+        TaskManager.getManager(project).addTaskListener(object : TaskListener {
+            override fun taskActivated(task: LocalTask) = treeTable.repaint()
+            override fun taskDeactivated(task: LocalTask) = treeTable.repaint()
+            override fun taskAdded(task: LocalTask) = Unit
+            override fun taskRemoved(task: LocalTask) = Unit
+        }, this)
+
         treeTable.setRootVisible(false)
         treeTable.tree.showsRootHandles = true
         treeTable.setRowHeight(JBUI.scale(24))
@@ -260,7 +291,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val limit = issueLimit
         val includeClosedNow = includeClosed
         val repositories = TaskManager.getManager(project).allRepositories.toList()
-        detailCache.clear() // an explicit refresh means the user wants fresh comments too
+        // An explicit refresh means the user wants fresh comments — and a fresh assignee — too.
+        detailCache.clear()
+        propertyCache.clear()
 
         // Seed the cache so configured servers show up immediately as "loading".
         cache = repositories.map { repo ->
@@ -398,6 +431,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         currentDetailTaskId = taskId
 
         cancelLoadingLabel() // whatever we show next supersedes any pending label
+        showingLoadingComments = false
         val requestId = ++detailRequestId
         if (node == null) {
             detailsPanel.show(null)
@@ -410,17 +444,22 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         // Resolved already? Render straight away. Comments arriving with the list fetch (GitHub does this)
         // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
+        loadExtraProperties(task, repository, key, requestId)
+
         val resolved = detailCache[key] ?: task.takeIf { it.comments.isNotEmpty() }?.also { detailCache[key] = it }
         if (resolved != null) {
-            detailsPanel.show(resolved, repository, loadingComments = false)
+            detailsPanel.show(resolved, repository, loadingComments = false, extra = extraFor(task, key))
             return
         }
 
         // Render the fields we already have straight away, but stay quiet about the fetch for a beat:
         // a server that answers within the grace period renders once, with no label flashing in between.
-        detailsPanel.show(task, repository, loadingComments = false)
+        detailsPanel.show(task, repository, loadingComments = false, extra = extraFor(task, key))
         loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
-            if (requestId == detailRequestId) detailsPanel.show(task, repository, loadingComments = true)
+            if (requestId == detailRequestId) {
+                showingLoadingComments = true
+                detailsPanel.show(task, repository, loadingComments = true, extra = extraFor(task, key))
+            }
         }.apply {
             isRepeats = false
             start()
@@ -440,9 +479,81 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (full != null) detailCache[key] = full
                 if (requestId != detailRequestId) return@invokeLater // selection moved on; its own timer now owns the pane
                 cancelLoadingLabel()
-                detailsPanel.show(full ?: task, repository, loadingComments = false)
+                showingLoadingComments = false
+                detailsPanel.show(full ?: task, repository, loadingComments = false, extra = extraFor(task, key))
             }
         }
+    }
+
+    /**
+     * Everything the pane should show beyond what the task carries: what the IDE tracked locally, then
+     * whatever the tracker told us when asked.
+     *
+     * Local first because it is always available — the adapter's answer arrives a request later, and
+     * appending it keeps the rows already on screen from reshuffling when it does.
+     */
+    private fun extraFor(task: Task, key: DetailKey): List<TaskProperty> =
+        localProperties(task) + propertyCache[key].orEmpty()
+
+    /**
+     * What the IDE itself knows, from the [LocalTask] behind this issue — which exists only once the
+     * task has been switched to, so most rows contribute nothing.
+     *
+     * Labelled "Tracked in IDE" rather than "Time spent" on purpose: this is the platform's own
+     * stopwatch, counting time this IDE observed the task being active. It is not what the tracker has
+     * logged, and GitLab reports that separately under its own name.
+     */
+    /**
+     * Whether this row is the task the IDE is currently on.
+     *
+     * Compared by id rather than by identity: our rows are freshly fetched remote issues, while the
+     * active one is the [com.intellij.tasks.LocalTask] built from whichever copy was activated. Cheap
+     * enough for a renderer — the platform holds the active task in a field.
+     */
+    private fun isActiveTask(task: Task): Boolean =
+        TaskManager.getManager(project).activeTask.id == task.id
+
+    private fun localProperties(task: Task): List<TaskProperty> {
+        val local = TaskManager.getManager(project).findTask(task.id) ?: return emptyList()
+        return buildList { addIfPresent("Tracked in IDE", formatDuration(local.totalTimeSpent)) }
+    }
+
+    /**
+     * Asks the provider adapter for fields [Task] has no room for, once per task per refresh.
+     *
+     * Runs alongside the comment fetch rather than after it: the two are independent reads, and chaining
+     * them would make the assignee wait on comments it has nothing to do with.
+     */
+    private fun loadExtraProperties(task: Task, repository: TaskRepository, key: DetailKey, requestId: Int) {
+        if (propertyCache.containsKey(key)) return
+        val editor = TaskEditors.forRepository(repository) ?: return
+
+        AppExecutorUtil.getAppExecutorService().execute {
+            val properties = try {
+                editor.extraProperties(task)
+            } catch (ce: ProcessCanceledException) {
+                return@execute
+            } catch (ex: Exception) {
+                return@execute // uncached, so the next visit tries again
+            }
+            ApplicationManager.getApplication().invokeLater {
+                propertyCache[key] = properties
+                if (requestId != detailRequestId) return@invokeLater // selection moved on
+                if (properties.isNotEmpty()) {
+                    detailsPanel.show(
+                        detailCache[key] ?: task,
+                        repository,
+                        loadingComments = showingLoadingComments,
+                        extra = extraFor(task, key),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The task listener unregisters itself against this; the timer would otherwise outlive the panel. */
+    override fun dispose() {
+        cancelLoadingLabel()
     }
 
     /** Stops any pending "Loading comments…" label so it can't fire over content that has already arrived. */
@@ -677,13 +788,24 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
                 is TaskNode -> {
                     val task = obj.task
-                    // When flat (ungrouped), prepend the server icon so the task's origin is visible;
-                    // when grouped, the server icon already sits on the parent header row.
-                    icon = if (groupByServer) task.icon else obj.repository.icon
+                    // The task the IDE is currently on, which the context menu can now switch.
+                    val active = isActiveTask(task)
+                    icon = when {
+                        // An arrow in the icon slot, where the eye already is. Bold alone proved far too
+                        // quiet on an id as short as "PC-1" — it was being applied and still went unseen.
+                        active -> AllIcons.Actions.Forward
+                        // When flat (ungrouped), prepend the server icon so the task's origin is visible;
+                        // when grouped, the server icon already sits on the parent header row.
+                        groupByServer -> task.icon
+                        else -> obj.repository.icon
+                    }
                     append(
                         task.presentableId,
-                        if (task.isClosed) SimpleTextAttributes.GRAYED_ATTRIBUTES
-                        else SimpleTextAttributes.REGULAR_ATTRIBUTES,
+                        when {
+                            active -> SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES
+                            task.isClosed -> SimpleTextAttributes.GRAYED_ATTRIBUTES
+                            else -> SimpleTextAttributes.REGULAR_ATTRIBUTES
+                        },
                     )
                 }
 

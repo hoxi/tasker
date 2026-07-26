@@ -42,6 +42,31 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
     override fun currentDescription(task: Task): String =
         readJsonObject(requireEndpoint(task), headers()).stringOrEmpty("description")
 
+    /**
+     * Assignee and time, from the same issue payload [currentDescription] already reads.
+     *
+     * Time is the real thing here — what everyone has logged against the issue, not what this IDE
+     * happened to observe. GitLab reports it pre-formatted in `human_total_time_spent`, so we show that
+     * rather than rounding the seconds ourselves and disagreeing with GitLab's own UI.
+     *
+     * Adding labels, milestone or due date later is a line each: they arrive in this same object.
+     */
+    override fun extraProperties(task: Task): List<TaskProperty> {
+        val issue = readJsonObject(endpoint(task) ?: return emptyList(), headers())
+        val stats = issue.objectOrNull("time_stats")
+
+        return buildList {
+            // `assignees` is the current field; `assignee` is its long-deprecated singular predecessor,
+            // still all that self-managed instances on older versions return.
+            val assignees = issue.mapArray("assignees") { it.stringOrEmpty("name") }
+                .ifEmpty { listOfNotNull(issue.objectOrNull("assignee")?.stringOrEmpty("name")) }
+            addIfPresent("Assignee", assignees.filter { it.isNotBlank() }.joinToString(", "))
+
+            addIfPresent("Time spent", stats?.stringOrEmpty("human_total_time_spent"))
+            addIfPresent("Estimate", stats?.stringOrEmpty("human_time_estimate"))
+        }
+    }
+
     private fun updateIssue(task: Task, field: String, value: String) {
         val payload = JsonObject().apply { addProperty(field, value) }
         HttpRequests.put(requireEndpoint(task), JSON_CONTENT_TYPE).sendJson(payload, headers())

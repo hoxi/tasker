@@ -14,6 +14,9 @@ class TaskerToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = TaskerPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, null, false)
+        // The panel listens for task activation, so it has to be torn down with the content rather than
+        // left for the garbage collector — an orphaned listener would keep repainting a dead tree.
+        content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
     }
 }
