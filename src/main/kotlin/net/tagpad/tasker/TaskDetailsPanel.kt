@@ -29,6 +29,7 @@ import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.GridLayout
+import java.awt.KeyboardFocusManager
 import java.awt.Rectangle
 import java.awt.event.ActionEvent
 import java.awt.event.ActionListener
@@ -48,6 +49,7 @@ import javax.swing.JTextArea
 import javax.swing.KeyStroke
 import javax.swing.Scrollable
 import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 import javax.swing.event.HyperlinkEvent
 import javax.swing.plaf.basic.BasicTextUI
 import javax.swing.text.View
@@ -371,11 +373,23 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     private fun exitDescriptionEdit() {
+        // Save and Cancel are about to be hidden. Swing hands the focus of a component it hides to
+        // whatever comes next in the traversal order, which is nowhere near here — the toolbar's task
+        // limit spinner, in practice, left wearing a focus ring for no reason. Take the focus back.
+        // Only when the edit actually held it: this same exit runs when the selection moves to another
+        // task, and stealing focus off the list at that point would be the worse bug.
+        val heldFocus = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+            ?.let { SwingUtilities.isDescendingFrom(it, descriptionSection) } == true
+
         editingDescription = false
         descriptionText.setEditing(false)
         descriptionEditButtons.isVisible = false
         renderDescription()
         bodyColumn.revalidate()
+
+        // A read-only text area draws no caret and, in read mode, no border either, so this parks the
+        // focus without marking anything.
+        if (heldFocus) descriptionText.requestFocusInWindow()
     }
 
     /** Read mode. An absent description still shows the section, since the pen is how you add one. */

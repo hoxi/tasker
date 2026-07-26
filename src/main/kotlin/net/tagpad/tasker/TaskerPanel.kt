@@ -198,7 +198,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val actionToolbar = ActionManager.getInstance().createActionToolbar("TaskerToolbar", group, true)
         actionToolbar.targetComponent = treeTable
 
-        // Max-issues spinner: how many issues to request per server (lower = faster loads).
+        // Task limit spinner: how many issues to request per server (lower = faster loads).
         val spinner = JBIntSpinner(issueLimit, 1, 500)
         spinner.addChangeListener {
             val value = spinner.number
@@ -209,7 +209,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
         val limitPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
             isOpaque = false
-            add(JBLabel("Max:"))
+            add(JBLabel("Task limit:"))
             add(spinner)
         }
 
