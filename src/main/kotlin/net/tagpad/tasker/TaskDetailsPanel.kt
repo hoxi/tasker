@@ -107,7 +107,13 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private val createdField = MetaField("Created")
     private val updatedField = MetaField("Updated")
 
-    private val metaRow = JPanel(GridLayout(1, 2, JBUI.scale(16), 0)).apply {
+    /**
+     * Created and Updated, then whatever else the tracker knows about the issue.
+     *
+     * Zero rows rather than one, so a task with more to say wraps onto further rows instead of squeezing
+     * every field into a single line.
+     */
+    private val metaRow = JPanel(GridLayout(0, 2, JBUI.scale(16), JBUI.scale(10))).apply {
         isOpaque = false
         add(createdField)
         add(updatedField)
@@ -277,7 +283,17 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         show(null)
     }
 
-    fun show(task: Task?, repository: TaskRepository? = null, loadingComments: Boolean = false) {
+    /**
+     * [extra] are fields the caller resolved that the task itself can't carry — see
+     * [TaskEditor.extraProperties]. They arrive late for some providers, which simply means another
+     * [show] for the same task once they land.
+     */
+    fun show(
+        task: Task?,
+        repository: TaskRepository? = null,
+        loadingComments: Boolean = false,
+        extra: List<TaskProperty> = emptyList(),
+    ) {
         if (task == null) {
             issueUrl = null
             currentTaskId = null
@@ -303,6 +319,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         statusBadge.setStatus(statusText(task))
         createdField.setValue(formatDate(task.created))
         updatedField.setValue(formatDate(task.updated))
+        renderMetaFields(task, extra)
 
         shownDescription = task.description.orEmpty()
         if (!editingDescription) renderDescription()
@@ -316,6 +333,43 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         header.repaint()
         bodyColumn.revalidate()
         bodyColumn.repaint()
+    }
+
+    /**
+     * Rebuilds the meta row: Created and Updated always, then everything else the tracker exposes.
+     *
+     * Fields are recreated rather than reused because their number varies by provider and by issue —
+     * YouTrack alone reports four, GitHub one, a task with no assignee none at all.
+     */
+    private fun renderMetaFields(task: Task, extra: List<TaskProperty>) {
+        metaRow.removeAll()
+        metaRow.add(createdField)
+        metaRow.add(updatedField)
+
+        for (property in nativeProperties(task) + extra) {
+            metaRow.add(MetaField(property.label).apply { setValue(property.value) })
+        }
+    }
+
+    /**
+     * What the tracker already handed us on the task, via [Task.getCustomProperties].
+     *
+     * [Task.getPropertiesToShowInPreview] is the tracker's own shortlist, and is honoured for both
+     * membership and order; nothing in the platform reads it, so we are its first consumer. A tracker
+     * that fills the map but leaves the shortlist empty gets all of it.
+     *
+     * State is dropped: the badge above already shows it, and showing it twice under two different
+     * labels would just look like a bug.
+     */
+    private fun nativeProperties(task: Task): List<TaskProperty> {
+        val properties = task.customProperties
+        val order = task.propertiesToShowInPreview.ifEmpty { properties.keys.toList() }
+
+        return order.mapNotNull { key ->
+            if (key.equals("state", ignoreCase = true)) return@mapNotNull null
+            val property = properties[key] ?: return@mapNotNull null
+            property.value.takeIf { it.isNotBlank() }?.let { TaskProperty(property.displayName, it) }
+        }
     }
 
     // ---- editing ---------------------------------------------------------------------------------

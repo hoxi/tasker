@@ -38,6 +38,45 @@ private fun RequestBuilder.withHeaders(headers: Map<String, String>): RequestBui
 internal fun JsonObject.stringOrEmpty(field: String): String =
     get(field)?.takeIf { !it.isJsonNull }?.asString.orEmpty()
 
+/** A nested object, or null when the field is absent, null, or not an object. */
+internal fun JsonObject.objectOrNull(field: String): JsonObject? =
+    get(field)?.takeIf { it.isJsonObject }?.asJsonObject
+
+/**
+ * Maps over a JSON array of objects, dropping entries that map to blank.
+ *
+ * Trackers are inconsistent about empty collections — absent, null, or `[]` — and about which key holds
+ * a person's name, so callers pull what they can and this drops the misses.
+ */
+internal fun JsonObject.mapArray(field: String, select: (JsonObject) -> String): List<String> =
+    get(field)?.takeIf { it.isJsonArray }?.asJsonArray
+        ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject?.let(select)?.takeIf(String::isNotBlank) }
+        .orEmpty()
+
+/** Only worth a row when there is something in it; blank values are left out rather than shown empty. */
+internal fun MutableList<TaskProperty>.addIfPresent(label: String, value: String?) {
+    if (!value.isNullOrBlank()) add(TaskProperty(label, value))
+}
+
+/**
+ * Milliseconds as `2h 15m`, or `45m`, or `30s`.
+ *
+ * Deliberately coarse: this sits in a details pane next to a date, not in a timesheet, and a running
+ * seconds count would only draw the eye.
+ */
+internal fun formatDuration(millis: Long): String {
+    if (millis <= 0) return ""
+    val totalMinutes = millis / 60_000
+    if (totalMinutes == 0L) return "${millis / 1000}s"
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return when {
+        hours == 0L -> "${minutes}m"
+        minutes == 0L -> "${hours}h"
+        else -> "${hours}h ${minutes}m"
+    }
+}
+
 /**
  * `Basic base64(user:secret)` — how `NewBaseRepositoryImpl` authenticates the platform's own reads, so
  * a server whose issue list already loads will accept our writes on the same credentials.

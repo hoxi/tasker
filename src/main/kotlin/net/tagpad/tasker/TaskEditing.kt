@@ -3,8 +3,11 @@ package net.tagpad.tasker
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 
+/** A label and its value, as the details pane shows it. */
+data class TaskProperty(val label: String, val value: String)
+
 /**
- * What a task server lets us change, and how.
+ * What a task server lets us change, and what it can tell us that [Task] has no room for.
  *
  * This is a plugin-side abstraction rather than a platform one by necessity: [TaskRepository] can only
  * set a task's state and log time against it. It has no notion of editing a summary or a description,
@@ -43,6 +46,20 @@ interface TaskEditor {
      */
     @Throws(Exception::class)
     fun currentDescription(task: Task): String = task.description.orEmpty()
+
+    /**
+     * Fields the tracker holds that [Task] has nowhere to put — assignee, time spent and the like.
+     *
+     * [Task] stops at id, summary, description, dates and state. Everything else a tracker knows about
+     * an issue is either dropped at that boundary or funnelled through [Task.getCustomProperties], which
+     * of the bundled providers only YouTrack fills in. So for the rest we read it back ourselves, off
+     * the endpoint this adapter already knows how to address and authenticate.
+     *
+     * Shown in the order returned. Hits the network, so call it off the EDT. Returning nothing is the
+     * honest answer for a tracker that exposes nothing extra.
+     */
+    @Throws(Exception::class)
+    fun extraProperties(task: Task): List<TaskProperty> = emptyList()
 }
 
 /** Resolves the adapter for a server, or null when nothing on it can be edited. */

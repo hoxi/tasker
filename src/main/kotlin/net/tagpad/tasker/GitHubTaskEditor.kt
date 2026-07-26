@@ -35,6 +35,22 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
         HttpRequests.post("${requireEndpoint(task)}/comments", JSON_CONTENT_TYPE).sendJson(payload, headers())
     }
 
+    /**
+     * Assignee, from the issue itself.
+     *
+     * No time spent: GitHub's issue API has no time tracking at all, so there is nothing to read. What a
+     * GitHub row shows for time, if anything, is whatever this IDE clocked locally.
+     *
+     * Adding labels or milestone later is a line each — both arrive in this same object.
+     */
+    override fun extraProperties(task: Task): List<TaskProperty> {
+        val issue = readJsonObject(endpoint(task) ?: return emptyList(), headers())
+
+        return buildList {
+            addIfPresent("Assignee", issue.mapArray("assignees") { it.stringOrEmpty("login") }.joinToString(", "))
+        }
+    }
+
     private fun patchIssue(task: Task, field: String, value: String) {
         val payload = JsonObject().apply { addProperty(field, value) }
         HttpRequests.patch(requireEndpoint(task), JSON_CONTENT_TYPE).sendJson(payload, headers())
