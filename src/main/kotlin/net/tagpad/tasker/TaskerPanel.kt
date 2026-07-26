@@ -470,87 +470,58 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         })
     }
 
-    /** Turns the details pane's edit actions into server writes. */
+    /** Turns the details pane's inline edits into server writes. */
     private inner class EditHandler : TaskDetailsPanel.EditRequests {
 
-        override fun renameTask() = edit(
-            dialogTitle = "Rename Task",
-            label = "Summary:",
-            initialText = { _, task -> task.summary },
-            multiline = false,
-            allowBlank = false,
-            progressTitle = "Renaming task…",
-        ) { editor, task, text -> editor.rename(task, text) }
+        /**
+         * Reads through the editor rather than the task: GitLab's Task reports no description even when
+         * the issue has one, so seeding the inline editor from the task would turn a save into a silent
+         * wipe. On failure the callback never fires and the pane stays in read mode.
+         */
+        override fun loadDescription(onLoaded: (String) -> Unit) {
+            val node = selectedTaskNode() ?: return
+            val task = node.task
+            val editor = TaskEditors.forRepository(node.repository) ?: return
 
-        override fun editDescription() = edit(
-            dialogTitle = "Edit Description",
-            label = "Description:",
-            // Prefill through the editor, not the task: GitLab's Task reports no description even when
-            // the issue has one, so reading it from the task would turn a save into a silent wipe.
-            initialText = { editor, task -> editor.currentDescription(task) },
-            multiline = true,
-            allowBlank = true,
-            progressTitle = "Updating description…",
-        ) { editor, task, text -> editor.setDescription(task, text) }
+            ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, "Loading description…", true) {
+                private var loaded: String? = null
+                private var failure: Exception? = null
 
-        override fun addComment() = edit(
-            dialogTitle = "Add Comment",
-            label = "Comment:",
-            initialText = { _, _ -> "" },
-            multiline = true,
-            allowBlank = false,
-            progressTitle = "Posting comment…",
-        ) { editor, task, text -> editor.addComment(task, text) }
+                override fun run(indicator: ProgressIndicator) {
+                    try {
+                        loaded = editor.currentDescription(task)
+                    } catch (ce: ProcessCanceledException) {
+                        throw ce
+                    } catch (ex: Exception) {
+                        failure = ex
+                    }
+                }
+
+                override fun onSuccess() {
+                    val error = failure
+                    if (error != null) notifyFailure("Loading description", error) else onLoaded(loaded.orEmpty())
+                }
+            })
+        }
+
+        override fun saveSummary(text: String) =
+            write("Renaming task…") { editor, task -> editor.rename(task, text) }
+
+        override fun saveDescription(text: String) =
+            write("Updating description…") { editor, task -> editor.setDescription(task, text) }
+
+        override fun postComment(text: String) =
+            write("Posting comment…") { editor, task -> editor.addComment(task, text) }
     }
 
-    /**
-     * Works out what to prefill, prompts, then applies the result off the EDT.
-     *
-     * The prefill runs in the background because deriving it can itself need a server read — GitLab has
-     * to fetch the description it never puts on the task. A failed read aborts before the dialog opens:
-     * a blank field would be indistinguishable from a blank value, and saving it would destroy the text
-     * on the server.
-     */
-    private fun edit(
-        dialogTitle: String,
-        label: String,
-        initialText: (TaskEditor, Task) -> String,
-        multiline: Boolean,
-        allowBlank: Boolean,
-        progressTitle: String,
-        apply: (TaskEditor, Task, String) -> Unit,
-    ) {
+    /** Resolves the selection and its adapter, then hands the write off to [applyWrite]. */
+    private fun write(progressTitle: String, action: (TaskEditor, Task) -> Unit) {
         val node = selectedTaskNode() ?: return
         val task = node.task
         val repository = node.repository
         val editor = TaskEditors.forRepository(repository) ?: return
 
-        ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, "Loading…", true) {
-            private var initial = ""
-            private var failure: Exception? = null
-
-            override fun run(indicator: ProgressIndicator) {
-                initial = try {
-                    initialText(editor, task)
-                } catch (ce: ProcessCanceledException) {
-                    throw ce
-                } catch (ex: Exception) {
-                    failure = ex
-                    ""
-                }
-            }
-
-            override fun onSuccess() {
-                val error = failure
-                if (error != null) {
-                    notifyFailure(dialogTitle, error)
-                    return
-                }
-                val dialog = TaskTextInputDialog(project, dialogTitle, label, initial, multiline, allowBlank)
-                if (!dialog.showAndGet()) return
-                applyWrite(repository, task, progressTitle) { apply(editor, task, dialog.text) }
-            }
-        })
+        applyWrite(repository, task, progressTitle) { action(editor, task) }
     }
 
     /**
