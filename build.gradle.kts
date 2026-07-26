@@ -34,4 +34,12 @@ intellijPlatform {
 
 kotlin {
     jvmToolchain(25)
+    compilerOptions {
+        // Without this, a Kotlin class implementing a Kotlin interface gets a compatibility bridge for
+        // every default member it inherits. ToolWindowFactory is such an interface, so our factory was
+        // emitting overrides of isApplicable and isDoNotActivateOnStart — both deprecated — that the
+        // source never mentions, and the plugin verifier reported them as ours. Real JVM default
+        // methods leave the inherited members where they belong.
+        freeCompilerArgs.add("-jvm-default=no-compatibility")
+    }
 }
