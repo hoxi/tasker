@@ -1,5 +1,9 @@
 # Tasker
 
+![Tasker tool window](docs/images/tool-window.png)
+
+## Overview
+
 An IntelliJ IDEA tool window that puts every issue from every configured task server in one sortable, groupable table —
 with a details pane you can edit in place.
 
@@ -7,16 +11,19 @@ The bundled **Task Management** plugin already knows how to talk to your tracker
 search popup, one issue at a time. Tasker reuses those same server connections and shows the lot as a table you can
 actually work in.
 
-![Tasker tool window](docs/images/tool-window.png)
-
 ## Requirements
 
 - IntelliJ IDEA **2026.1** or newer (build 261+)
-- The bundled **Task Management** plugin (`com.intellij.tasks`) enabled — Tasker depends on it outright
+- The **Task Management** plugin (`com.intellij.tasks`) installed and enabled — Tasker depends on it outright and will
+  not load without it
 - At least one task server configured under **Settings | Tools | Tasks | Servers**
 
 Tasker adds no credentials or settings of its own. Every server, token and connection it uses is the one you already
 configured for Task Management.
+
+> **2026.2 and later:** IntelliJ IDEA stopped bundling Task Management in 2026.2 — it is no longer under `plugins/tasks`
+> in the distribution. On those builds, install it from the Marketplace before installing Tasker. Tasker itself is built
+> against 2026.1 for that reason.
 
 ## The task list
 
