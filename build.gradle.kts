@@ -64,6 +64,10 @@ dependencies {
         // plugin can actually be exercised on a platform that no longer ships it.
         plugins(providers.gradleProperty("platformPlugins").map { it.split(',').filter { s -> s.isNotBlank() } })
 
+        // Same, but by id alone: the newest version the target platform accepts is looked up instead of
+        // being pinned here, which is what we want for a plugin that is versioned per IDE build.
+        compatiblePlugins(providers.gradleProperty("platformCompatiblePlugins").map { it.split(',').filter { s -> s.isNotBlank() } })
+
         // Platform v2 modules. The Task Management download carries only the tracker implementations —
         // the API it is written against, com.intellij.tasks.Task and TaskRepository, stays in the
         // platform as intellij.platform.tasks and has to be asked for by name once the plugin is no
