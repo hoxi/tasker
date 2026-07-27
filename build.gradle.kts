@@ -57,6 +57,18 @@ dependencies {
             useInstaller = !version.endsWith("EAP-SNAPSHOT")
         }
         bundledPlugins(providers.gradleProperty("platformBundledPlugins").map { it.split(',').filter { s -> s.isNotBlank() } })
+
+        // Marketplace plugins, as "id:version". Task Management is bundled up to 2026.1 and a separate
+        // download from 2026.2, so which of the two lists it belongs in depends on platformVersion —
+        // see gradle.properties. Declaring it here also installs it into the runIde sandbox, so the
+        // plugin can actually be exercised on a platform that no longer ships it.
+        plugins(providers.gradleProperty("platformPlugins").map { it.split(',').filter { s -> s.isNotBlank() } })
+
+        // Platform v2 modules. The Task Management download carries only the tracker implementations —
+        // the API it is written against, com.intellij.tasks.Task and TaskRepository, stays in the
+        // platform as intellij.platform.tasks and has to be asked for by name once the plugin is no
+        // longer bundled.
+        bundledModules(providers.gradleProperty("platformBundledModules").map { it.split(',').filter { s -> s.isNotBlank() } })
     }
 }
 
