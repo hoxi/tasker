@@ -21,9 +21,15 @@ actually work in.
 Tasker adds no credentials or settings of its own. Every server, token and connection it uses is the one you already
 configured for Task Management.
 
-> **2026.2 and later:** IntelliJ IDEA stopped bundling Task Management in 2026.2 — it is no longer under `plugins/tasks`
-> in the distribution. On those builds, install it from the Marketplace before installing Tasker. Tasker itself is built
-> against 2026.1 for that reason.
+### You may need to install Task Management yourself
+
+Task Management used to ship with the IDE, and in some JetBrains products it no longer does — IntelliJ IDEA 2026.2, for
+one, has no `plugins/tasks` in its distribution. Where that is the case, install
+[Task Management](https://plugins.jetbrains.com/plugin/11545-task-management) from the Marketplace first. Tasker
+declares a hard dependency on it, so without it Tasker will not load at all rather than degrading.
+
+The direction of travel is towards it being unbundled everywhere, so expect this to apply to more products from 2026.3
+onwards. Nothing changes for Tasker either way: it asks for the plugin by id and uses it wherever it comes from.
 
 ## The task list
 
