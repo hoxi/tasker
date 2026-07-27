@@ -6,8 +6,8 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
 
 /**
- * Registers the "Tasks" tool window (docked lower-left via anchor=left, secondary=true in plugin.xml)
- * and populates it with a single panel that lists tasks grouped per configured task server.
+ * Registers the "Tasks" tool window (docked at the bottom via anchor=bottom in plugin.xml) and populates
+ * it with a single panel that lists tasks grouped per configured task server.
  */
 class TaskerToolWindowFactory : ToolWindowFactory {
 
