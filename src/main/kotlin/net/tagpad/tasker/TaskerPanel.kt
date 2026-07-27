@@ -18,6 +18,7 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task as ProgressTask
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.util.text.StringUtil
@@ -207,11 +208,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     private fun createToolbar(): JComponent {
         val group = DefaultActionGroup()
-        group.add(object : AnAction("Refresh", "Reload tasks from all configured servers", AllIcons.Actions.Refresh) {
+        // All three are DumbAware for the same reason the tool window is: they refetch from servers or
+        // rearrange rows we already hold, and neither needs an index to be ready.
+        group.add(object : AnAction("Refresh", "Reload tasks from all configured servers", AllIcons.Actions.Refresh), DumbAware {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun actionPerformed(e: AnActionEvent) = refresh()
         })
-        group.add(object : ToggleAction("Group by Server", "Group tasks under their task server", AllIcons.Actions.GroupBy) {
+        group.add(object : ToggleAction("Group by Server", "Group tasks under their task server", AllIcons.Actions.GroupBy), DumbAware {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun isSelected(e: AnActionEvent) = groupByServer
             override fun setSelected(e: AnActionEvent, state: Boolean) {
@@ -219,7 +222,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 rebuild()
             }
         })
-        group.add(object : ToggleAction("Show Closed Issues", "Also fetch and show closed/resolved issues", AllIcons.Actions.ToggleVisibility) {
+        group.add(object : ToggleAction("Show Closed Issues", "Also fetch and show closed/resolved issues", AllIcons.Actions.ToggleVisibility), DumbAware {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun isSelected(e: AnActionEvent) = includeClosed
             override fun setSelected(e: AnActionEvent, state: Boolean) {
