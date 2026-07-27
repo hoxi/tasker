@@ -1,6 +1,6 @@
 # Changelog
 
-## [2026.1]
+## [2026.2]
 
 ### Additions
 
