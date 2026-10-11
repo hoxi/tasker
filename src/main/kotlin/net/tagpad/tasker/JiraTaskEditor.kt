@@ -134,19 +134,37 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         }
     }
 
-    /** People, which are only worth a request once a task is actually looked at. */
-    override fun extraProperties(task: Task): List<TaskProperty> {
-        val fields = readJsonObject("${issueEndpoint(task) ?: return emptyList()}?fields=assignee,reporter", headers())
-            .objectOrNull("fields") ?: return emptyList()
+    /**
+     * People, priority and labels, which are only worth a request once a task is actually looked at.
+     *
+     * The priority icon is Jira's own artwork for that level, through the same cache as issue-type icons.
+     * Labels are bare strings in Jira, with no colour of their own.
+     */
+    override fun extras(task: Task): TaskExtras {
+        val endpoint = issueEndpoint(task) ?: return TaskExtras()
+        val fields = readJsonObject("$endpoint?fields=assignee,reporter,priority,labels", headers())
+            .objectOrNull("fields") ?: return TaskExtras()
 
-        return buildList {
-            addIfPresent("Assignee", fields.objectOrNull("assignee")?.stringOrEmpty("displayName"))
-            addIfPresent("Reporter", fields.objectOrNull("reporter")?.stringOrEmpty("displayName"))
+        val priority = fields.objectOrNull("priority")?.let { p ->
+            p.stringOrEmpty("name").takeIf { it.isNotBlank() }
+                ?.let { TaskPriority(it, icon(p.stringOrEmpty("iconUrl"))) }
         }
+        val labels = fields.get("labels")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonPrimitive }?.asString?.takeIf(String::isNotBlank) }
+            ?.map { TaskLabel(it) }
+            .orEmpty()
+        return TaskExtras(
+            properties = buildList {
+                addIfPresent("Assignee", fields.objectOrNull("assignee")?.stringOrEmpty("displayName"))
+                addIfPresent("Reporter", fields.objectOrNull("reporter")?.stringOrEmpty("displayName"))
+            },
+            priority = priority,
+            labels = labels,
+        )
     }
 
     /**
-     * Status, issue type and priority for the whole list, a page of keys per request.
+     * Status and issue type for the whole list, a page of keys per request.
      *
      * The status is the workflow's own name — "In Review", "Selected for Development" — which `JiraTask`
      * squeezes into [com.intellij.tasks.TaskState] by numeric id. Ids are per-site on Cloud, so most
@@ -162,7 +180,7 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         val result = HashMap<String, TaskDecoration>()
         for (page in keys.chunked(PAGE_SIZE)) {
             val jql = URLEncoder.encode("key in (${page.joinToString(",")})", StandardCharsets.UTF_8)
-            val url = "$searchUrl?jql=$jql&fields=status,issuetype,priority&maxResults=${page.size}"
+            val url = "$searchUrl?jql=$jql&fields=status,issuetype&maxResults=${page.size}"
             val response = readJsonObject(url, headers())
             val issues = response.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
             for (element in issues) {
@@ -176,14 +194,10 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
     private fun decoration(fields: JsonObject): TaskDecoration {
         val type = fields.objectOrNull("issuetype")
-        val priority = fields.objectOrNull("priority")
         return TaskDecoration(
             status = fields.objectOrNull("status")?.stringOrEmpty("name")?.takeIf { it.isNotBlank() },
             icon = type?.stringOrEmpty("iconUrl")?.let(::icon),
-            properties = buildList {
-                addIfPresent("Type", type?.stringOrEmpty("name"))
-                addIfPresent("Priority", priority?.stringOrEmpty("name"))
-            },
+            properties = buildList { addIfPresent("Type", type?.stringOrEmpty("name")) },
         )
     }
 

@@ -3,16 +3,38 @@ package net.tagpad.tasker
 import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
+import java.awt.Color
 import javax.swing.Icon
 
 /** A label and its value, as the details pane shows it. */
 data class TaskProperty(val label: String, val value: String)
 
 /**
+ * How urgent a task is, as the tracker names it. [icon] is the tracker's own artwork for it where it
+ * has some (Jira's arrows), or a swatch of the tracker's colour for it (YouTrack's); otherwise none.
+ */
+data class TaskPriority(val name: String, val icon: Icon? = null)
+
+/**
+ * A tag or label on a task. [background] is the tracker's colour for it, when it assigns one; the
+ * pane picks a readable [foreground] itself when the tracker doesn't say.
+ */
+data class TaskLabel(val name: String, val background: Color? = null, val foreground: Color? = null)
+
+/** What [TaskEditor.extras] read for one task: fields for the meta row, its priority, its labels. */
+data class TaskExtras(
+    val properties: List<TaskProperty> = emptyList(),
+    val priority: TaskPriority? = null,
+    val labels: List<TaskLabel> = emptyList(),
+) {
+    fun isEmpty(): Boolean = properties.isEmpty() && priority == null && labels.isEmpty()
+}
+
+/**
  * What a row shows that [Task] gets wrong or leaves out, resolved for a whole list at once.
  *
  * [status] replaces [statusText] when set, [icon] replaces [Task.getIcon], and [properties] join the
- * details pane's meta row ahead of anything [TaskEditor.extraProperties] fetches later.
+ * details pane's meta row ahead of anything [TaskEditor.extras] fetches later.
  */
 data class TaskDecoration(
     val status: String? = null,
@@ -62,18 +84,19 @@ interface TaskEditor {
     fun currentDescription(task: Task): String = task.description.orEmpty()
 
     /**
-     * Fields the tracker holds that [Task] has nowhere to put — assignee, time spent and the like.
+     * What the tracker holds that [Task] has nowhere to put — assignee, time spent, priority, labels.
      *
      * [Task] stops at id, summary, description, dates and state. Everything else a tracker knows about
      * an issue is either dropped at that boundary or funnelled through [Task.getCustomProperties], which
      * of the bundled providers only YouTrack fills in. So for the rest we read it back ourselves, off
-     * the endpoint this adapter already knows how to address and authenticate.
+     * the endpoint this adapter already knows how to address and authenticate — in one request, since
+     * the pane asks for all of it at once when a task is selected.
      *
-     * Shown in the order returned. Hits the network, so call it off the EDT. Returning nothing is the
-     * honest answer for a tracker that exposes nothing extra.
+     * Properties are shown in the order returned. Hits the network, so call it off the EDT. Returning
+     * nothing is the honest answer for a tracker that exposes nothing extra.
      */
     @Throws(Exception::class)
-    fun extraProperties(task: Task): List<TaskProperty> = emptyList()
+    fun extras(task: Task): TaskExtras = TaskExtras()
 
     /**
      * The task's comments, for a provider whose [Task.getComments] doesn't carry them.
@@ -103,7 +126,7 @@ interface TaskEditor {
     /**
      * [TaskDecoration]s for a freshly fetched list, keyed by [Task.getId].
      *
-     * Unlike [extraProperties], this feeds the list itself — the Status column and the row icon — so it
+     * Unlike [extras], this feeds the list itself — the Status column and the row icon — so it
      * runs once per refresh for every row, and should batch rather than ask per task. Tasks missing
      * from the result just render as [Task] describes them. Hits the network, so call it off the EDT.
      */

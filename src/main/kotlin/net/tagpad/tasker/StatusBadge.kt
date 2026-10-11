@@ -39,6 +39,17 @@ open class StatusBadge : JComponent() {
         chipForeground = fg
     }
 
+    /**
+     * Shows a tag or label rather than a state: the text as written, in the tracker's own colours. With
+     * no [background] it is the neutral grey pill; with no [foreground], whichever of black and white
+     * reads better on the background.
+     */
+    fun setLabel(label: String, background: Color?, foreground: Color?) {
+        text = label
+        chipBackground = background ?: GREY.first
+        chipForeground = foreground ?: background?.let(::readableOn) ?: GREY.second
+    }
+
     override fun getPreferredSize(): Dimension {
         if (text.isEmpty()) return Dimension(0, 0)
         val fm = getFontMetrics(font)
@@ -127,6 +138,12 @@ open class StatusBadge : JComponent() {
 
                 else -> StatusKind.CUSTOM
             }
+        }
+
+        /** Black or white text for [background], by its perceived brightness. */
+        private fun readableOn(background: Color): Color {
+            val luma = 0.299 * background.red + 0.587 * background.green + 0.114 * background.blue
+            return if (luma > 150) Color(0x1F2328) else Color.WHITE
         }
 
         private fun chip(lightBg: Int, lightFg: Int, darkBg: Int, darkFg: Int): Pair<Color, Color> =

@@ -6,6 +6,7 @@ import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
+import com.intellij.util.ui.ColorIcon
 import java.util.Date
 
 /**
@@ -51,6 +52,42 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         return readJsonObjects("${requireEndpoint(task)}/comments?fields=$fields", headers())
             .filterNot { it.get("deleted")?.takeIf { d -> d.isJsonPrimitive }?.asBoolean == true }
             .map { YouTrackComment(it, me) }
+    }
+
+    /**
+     * Priority and tags, both with YouTrack's colours.
+     *
+     * The other fields need no request: YouTrack is the one provider whose connector fills in
+     * [Task.getCustomProperties], and the pane shows those already. Priority is among them, but only as
+     * text; read here it comes with its colour, which stands in for an icon — YouTrack draws none.
+     */
+    override fun extras(task: Task): TaskExtras {
+        val fields = "customFields(name,value(name,color(background,foreground)))," +
+            "tags(name,color(background,foreground))"
+        val issue = readJsonObject("${endpoint(task) ?: return TaskExtras()}?fields=$fields", headers())
+
+        val priority = issue.get("customFields")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.firstOrNull { it.stringOrEmpty("name").equals("Priority", ignoreCase = true) }
+            ?.objectOrNull("value")
+            ?.let { value ->
+                val name = value.stringOrEmpty("name").takeIf { it.isNotBlank() } ?: return@let null
+                val color = parseHexColor(value.objectOrNull("color")?.stringOrEmpty("background"))
+                TaskPriority(name, color?.let { ColorIcon(16, 16, 10, 10, it, false, 3) })
+            }
+        val tags = issue.get("tags")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.mapNotNull { tag ->
+                val name = tag.stringOrEmpty("name").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val style = tag.objectOrNull("color")
+                TaskLabel(
+                    name,
+                    background = parseHexColor(style?.stringOrEmpty("background")),
+                    foreground = parseHexColor(style?.stringOrEmpty("foreground")),
+                )
+            }
+            .orEmpty()
+        return TaskExtras(priority = priority, labels = tags)
     }
 
     override fun canEditComment(task: Task, comment: Comment): Boolean =

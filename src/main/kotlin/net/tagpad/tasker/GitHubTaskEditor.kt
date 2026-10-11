@@ -123,19 +123,28 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
     }
 
     /**
-     * Assignee, from the issue itself.
+     * Assignee and labels, from the issue itself.
      *
      * No time spent: GitHub's issue API has no time tracking at all, so there is nothing to read. What a
-     * GitHub row shows for time, if anything, is whatever this IDE clocked locally.
-     *
-     * Adding labels or milestone later is a line each — both arrive in this same object.
+     * GitHub row shows for time, if anything, is whatever this IDE clocked locally. No priority either:
+     * issues have none, only GitHub Projects fields do, which this endpoint doesn't reach.
      */
-    override fun extraProperties(task: Task): List<TaskProperty> {
-        val issue = readJsonObject(endpoint(task) ?: return emptyList(), headers())
+    override fun extras(task: Task): TaskExtras {
+        val issue = readJsonObject(endpoint(task) ?: return TaskExtras(), headers())
 
-        return buildList {
-            addIfPresent("Assignee", issue.mapArray("assignees") { it.stringOrEmpty("login") }.joinToString(", "))
-        }
+        val labels = issue.get("labels")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.mapNotNull { label ->
+                label.stringOrEmpty("name").takeIf { it.isNotBlank() }
+                    ?.let { TaskLabel(it, parseHexColor(label.stringOrEmpty("color"))) }
+            }
+            .orEmpty()
+        return TaskExtras(
+            properties = buildList {
+                addIfPresent("Assignee", issue.mapArray("assignees") { it.stringOrEmpty("login") }.joinToString(", "))
+            },
+            labels = labels,
+        )
     }
 
     private fun patchIssue(task: Task, field: String, value: String) {
