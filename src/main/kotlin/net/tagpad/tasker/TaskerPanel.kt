@@ -49,6 +49,7 @@ import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.Graphics
+import java.awt.KeyboardFocusManager
 import java.awt.Rectangle
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -60,6 +61,7 @@ import javax.swing.JPanel
 import javax.swing.JTable
 import javax.swing.JTree
 import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.table.DefaultTableColumnModel
 import javax.swing.table.JTableHeader
@@ -812,6 +814,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * result. Shared by the detail edits and by status changes, which differ only in the write itself.
      */
     private fun applyWrite(repository: TaskRepository, task: Task, progressTitle: String, write: () -> Unit) {
+        val focusBefore = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
         ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, progressTitle, false) {
             private var failure: Exception? = null
             private var refreshed: Task? = null
@@ -852,7 +855,30 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     applyEdited(repository, task.id, refreshed, decorations, comments)
                 }
             }
+
+            override fun onFinished() = restoreFocus(focusBefore)
         })
+    }
+
+    /**
+     * Puts the focus back where it was before a write, if the write's aftermath moved it.
+     *
+     * Re-rendering the pane after a write could leave the focus to Swing's traversal order, which from the
+     * comment box wraps round to the toolbar — the task limit spinner ended up focused, its value
+     * selected, after every posted comment. Restored only when the focus is now nowhere or in the
+     * toolbar, which is not somewhere a user would have moved it in the second a write takes; a click
+     * into the list or the pane meanwhile is left alone.
+     */
+    private fun restoreFocus(focusBefore: Component?) {
+        if (focusBefore == null) return
+        // Queued behind the focus transfers the re-render requested, so it sees where they landed.
+        ApplicationManager.getApplication().invokeLater {
+            val now = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+            val strayed = now == null ||
+                (SwingUtilities.isDescendingFrom(now, this) && !SwingUtilities.isDescendingFrom(now, treeTable) &&
+                    !SwingUtilities.isDescendingFrom(now, detailsPanel))
+            if (strayed && now !== focusBefore && focusBefore.isShowing) focusBefore.requestFocusInWindow()
+        }
     }
 
     private fun applyEdited(
