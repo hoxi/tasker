@@ -227,9 +227,11 @@ object TaskEditors {
             else -> null
         }
 
-    // Repository types are package-private, so they can't be referenced directly — but each getName()
-    // returns a literal rather than a localized bundle key, which makes matching on the string safe. A
-    // rename on JetBrains' side greys the actions out; it can't misfire.
+    /*
+     * Repository types are package-private, so they can't be referenced directly — but each getName()
+     * returns a literal rather than a localized bundle key, which makes matching on the string safe. A
+     * rename on JetBrains' side greys the actions out; it can't misfire.
+     */
     private const val GITHUB = "GitHub"
 
     /** Lowercase "l" is not a typo: `GitlabRepositoryType.getName()` returns "Gitlab". */

@@ -97,8 +97,10 @@ open class StatusBadge : JComponent() {
         }
     }
 
-    // Geometry is shared by measuring and painting so the two can't drift apart. Scaled on each call
-    // rather than cached, so the badge follows a runtime change to the IDE's zoom level.
+    /*
+     * Geometry is shared by measuring and painting so the two can't drift apart. Scaled on each call
+     * rather than cached, so the badge follows a runtime change to the IDE's zoom level.
+     */
     private fun padH() = JBUI.scale(8)
     private fun padV() = JBUI.scale(2)
     private fun arc() = JBUI.scale(10)
@@ -127,9 +129,7 @@ open class StatusBadge : JComponent() {
             StatusKind.IN_PROGRESS -> BLUE
             StatusKind.REOPENED -> YELLOW
             StatusKind.DONE -> GREY           // terminal states are de-emphasized
-            // A state we don't recognise gets its own color rather than falling in with Done: grey would
-            // read as "finished", which is exactly the wrong thing to say about an unknown state.
-            StatusKind.CUSTOM -> PURPLE
+            StatusKind.CUSTOM -> PURPLE       // not grey: an unknown state mustn't read as "finished"
         }
 
         private fun classify(status: String): StatusKind {

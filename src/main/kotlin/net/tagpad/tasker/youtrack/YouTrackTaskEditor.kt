@@ -122,7 +122,6 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         HttpRequests.post("${requireEndpoint(task)}/comments/$id", JSON_CONTENT_TYPE).sendJson(payload, headers())
     }
 
-    /** The current user's entity id, which is how comment and reaction authors are matched to them. */
     /**
      * Pull requests from the issue's VCS changes, which hold commits and pull requests in one list told
      * apart by `$type`. YouTrack reports no state for a pull request, so none is shown.
@@ -161,6 +160,7 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
             }
     }
 
+    /** The current user's entity id, which is how comment and reaction authors are matched to them. */
     private fun currentUser(): String? = repository.currentUserId {
         readJsonObject("${repository.baseUrlOrNull() ?: return@currentUserId null}/api/users/me?fields=id", headers())
             .idOrEmpty("id")

@@ -391,10 +391,6 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         val JIRA_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
 
         /**
-         * A user's identity: `accountId` on Cloud, where it is all a user object is guaranteed to carry,
-         * and `key` or `name` on Server and Data Center, which predate account ids.
-         */
-        /**
          * The code host behind a dev-status application type. "stash" is Bitbucket's old name, which the
          * API kept; "githube" is GitHub Enterprise.
          */
@@ -419,6 +415,10 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         fun JsonElement.asIntOrNull(): Int? =
             takeIf { it.isJsonPrimitive }?.let { runCatching { it.asInt }.getOrNull() }
 
+        /**
+         * A user's identity: `accountId` on Cloud, where it is all a user object is guaranteed to carry,
+         * and `key` or `name` on Server and Data Center, which predate account ids.
+         */
         fun userId(user: JsonObject): String? =
             listOf("accountId", "key", "name")
                 .firstNotNullOfOrNull { user.stringOrEmpty(it).takeIf(String::isNotBlank) }
