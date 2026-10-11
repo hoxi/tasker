@@ -109,8 +109,18 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val decorations: Map<String, TaskDecoration> = emptyMap(),
     )
 
-    /** Cache key for a resolved task: ids are only unique within a server, so the url is part of the key. */
-    private data class DetailKey(val repositoryUrl: String?, val taskId: String)
+    /**
+     * Cache key for a resolved task. Ids are only unique within a server, so the server is part of the
+     * key — the configured server itself rather than its url, which two servers can share: every GitHub
+     * repository is configured against the same API host. The caches are cleared with every refresh, the
+     * only time the server objects are looked up afresh, so identity is stable for as long as a key lives.
+     */
+    private class DetailKey(val repository: TaskRepository, val taskId: String) {
+        override fun equals(other: Any?): Boolean =
+            other is DetailKey && other.repository === repository && other.taskId == taskId
+
+        override fun hashCode(): Int = 31 * System.identityHashCode(repository) + taskId.hashCode()
+    }
 
     private val columns: Array<ColumnInfo<DefaultMutableTreeNode, *>> = taskerColumns()
     private val root = DefaultMutableTreeNode()
@@ -532,7 +542,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         val task = node.task
         val repository = node.repository
-        val key = DetailKey(repository.url, task.id)
+        val key = DetailKey(repository, task.id)
 
         loadExtraProperties(task, repository, key, requestId)
         loadPullRequests(task, repository, key, requestId)
@@ -957,7 +967,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         decorations: Map<String, TaskDecoration>,
         comments: List<Comment>?,
     ) {
-        val key = DetailKey(repository.url, taskId)
+        val key = DetailKey(repository, taskId)
         if (refreshed == null || comments == null) {
             detailCache.remove(key)
             commentCache.remove(key)
