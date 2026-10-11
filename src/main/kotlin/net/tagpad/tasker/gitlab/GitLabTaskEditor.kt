@@ -78,8 +78,10 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
             .orEmpty()
 
         return TaskExtras(labels = labels, properties = buildList {
-            // `assignees` is the current field; `assignee` is its long-deprecated singular predecessor,
-            // still all that self-managed instances on older versions return.
+            /*
+             * `assignees` is the current field; `assignee` is its long-deprecated singular predecessor,
+             * still all that self-managed instances on older versions return.
+             */
             val assignees = issue.mapArray("assignees") { it.stringOrEmpty("name") }
                 .ifEmpty { listOfNotNull(issue.objectOrNull("assignee")?.stringOrEmpty("name")) }
             addIfPresent("Assignee", assignees.filter { it.isNotBlank() }.joinToString(", "))

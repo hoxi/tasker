@@ -75,8 +75,10 @@ private class IdColumn : ColumnInfo<DefaultMutableTreeNode, Any>("ID") {
 }
 
 private class StatusColumn : ColumnInfo<DefaultMutableTreeNode, String>("Status") {
-    // Note: the badge renderer is installed on the TableColumn in TaskerPanel — a plain TreeTable
-    // (unlike TableView) does not consult ColumnInfo.getRenderer.
+    /*
+     * The badge renderer is installed on the TableColumn in TaskerPanel — a plain TreeTable (unlike
+     * TableView) does not consult ColumnInfo.getRenderer.
+     */
     override fun valueOf(item: DefaultMutableTreeNode): String = item.statusText()
     override fun getComparator(): Comparator<DefaultMutableTreeNode> =
         Comparator { a, b -> StringUtil.naturalCompare(a.statusText(), b.statusText()) }

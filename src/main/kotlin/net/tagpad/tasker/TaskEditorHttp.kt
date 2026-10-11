@@ -11,7 +11,7 @@ import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
-/** Shared plumbing for the REST calls the tasks API can't make for us. */
+// Shared plumbing for the REST calls the tasks API can't make for us.
 
 internal const val JSON_CONTENT_TYPE = "application/json"
 

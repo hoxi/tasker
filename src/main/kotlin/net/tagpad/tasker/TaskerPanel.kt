@@ -194,8 +194,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     init {
-        // Which row is bold depends on state the platform owns, so nothing here would notice it changing
-        // — not even a switch made from our own context menu, which goes straight to the TaskManager.
+        /*
+         * Which row is bold depends on state the platform owns, so nothing here would notice it changing
+         * — not even a switch made from our own context menu, which goes straight to the TaskManager.
+         */
         TaskManager.getManager(project).addTaskListener(object : TaskListener {
             override fun taskActivated(task: LocalTask) = treeTable.repaint()
             override fun taskDeactivated(task: LocalTask) = treeTable.repaint()
@@ -237,8 +239,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         for (i in widths.indices) {
             val column = treeTable.columnModel.getColumn(i)
             column.preferredWidth = widths[i]
-            // A plain TreeTable ignores ColumnInfo.getRenderer, so install the badge renderer here.
-            // Match by model index so it survives column reordering.
+            /*
+             * A plain TreeTable ignores ColumnInfo.getRenderer, so install the badge renderer here.
+             * Match by model index so it survives column reordering.
+             */
             if (column.modelIndex == STATUS_COLUMN) {
                 column.cellRenderer = StatusCellRenderer()
             }
@@ -247,8 +251,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     private fun createToolbar(): JComponent {
         val group = DefaultActionGroup()
-        // All three are DumbAware for the same reason the tool window is: they refetch from servers or
-        // rearrange rows we already hold, and neither needs an index to be ready.
+        /*
+         * All three are DumbAware for the same reason the tool window is: they refetch from servers or
+         * rearrange rows we already hold, and neither needs an index to be ready.
+         */
         group.add(object : AnAction("Refresh", "Reload tasks from all configured servers", AllIcons.Actions.Refresh), DumbAware {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
             override fun actionPerformed(e: AnActionEvent) = refresh()
@@ -269,8 +275,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 refresh() // closed issues aren't in the cache — refetch from the servers
             }
         })
-        // Registered by the bundled Task Management plugin, which this plugin depends on outright — so
-        // the only way this misses is a rename on JetBrains' side, and then the button simply isn't there.
+        /*
+         * Registered by the Task Management plugin, which this plugin depends on outright — so the only
+         * way this misses is a rename on JetBrains' side, and then the button simply isn't there.
+         */
         (ActionManager.getInstance().getAction(TASKS_AND_CONTEXTS_GROUP) as? ActionGroup)?.let { tasksMenu ->
             group.addSeparator()
             group.add(TasksAndContextsGroup(tasksMenu))
@@ -311,8 +319,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      */
     private class TasksAndContextsGroup(delegate: ActionGroup) : ActionGroupWrapper(delegate) {
         init {
-            // After the superclass has copied the delegate's presentation, so these win. The text is
-            // left alone when the delegate has one: it is the same menu, already localized.
+            /*
+             * After the superclass has copied the delegate's presentation, so these win. The text is
+             * left alone when the delegate has one: it is the same menu, already localized.
+             */
             isPopup = true
             templatePresentation.icon = AllIcons.Toolwindows.Task
             if (templatePresentation.text.isNullOrBlank()) templatePresentation.text = "Tasks & Contexts"
@@ -520,14 +530,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val repository = node.repository
         val key = DetailKey(repository.url, task.id)
 
-        // Resolved already? Render straight away. Comments arriving with the list fetch (GitHub does this)
-        // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
         loadExtraProperties(task, repository, key, requestId)
         loadPullRequests(task, repository, key, requestId)
 
         /*
-         * Not when the adapter fetches comments itself: Jira's list tasks carry comments too, but raw, and
-         * taking those as final would mean the adapter's own were never asked for.
+         * Resolved already? Render straight away. Comments arriving with the list fetch count as resolved
+         * too, and are folded into the cache so the tree node itself can be dropped — but not when the
+         * adapter fetches comments itself: Jira's list tasks carry comments too, but raw, and taking those
+         * as final would mean the adapter's own were never asked for.
          */
         val ownComments = TaskEditors.forRepository(repository)?.suppliesComments != true
         val resolved = detailCache[key]?.takeIf { key in commentCache }
@@ -540,8 +550,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             return
         }
 
-        // Render the fields we already have straight away, but stay quiet about the fetch for a beat:
-        // a server that answers within the grace period renders once, with no label flashing in between.
+        /*
+         * Render the fields we already have straight away, but stay quiet about the fetch for a beat:
+         * a server that answers within the grace period renders once, with no label flashing in between.
+         */
         showDetails(task, repository, key, loadingComments = false)
         loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
             if (requestId == detailRequestId) {
@@ -568,8 +580,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             }
             val comments = full?.let { loadComments(repository, it) }
             ApplicationManager.getApplication().invokeLater {
-                // Cache before the staleness check: the result is still valid even if the selection moved on.
-                // Failures aren't cached, so they're retried on the next visit rather than sticking.
+                /*
+                 * Cache before the staleness check: the result is still valid even if the selection moved
+                 * on. Failures aren't cached, so they're retried on the next visit rather than sticking.
+                 */
                 if (full != null && comments != null) {
                     detailCache[key] = full
                     commentCache[key] = comments
@@ -993,12 +1007,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     val task = obj.task
                     // The task the IDE is currently on, which the context menu can now switch.
                     val active = isActiveTask(task)
+                    /*
+                     * The active task gets an arrow in the icon slot, where the eye already is: bold alone
+                     * proved far too quiet on an id as short as "PC-1". Otherwise, when flat, the server
+                     * icon shows the task's origin; when grouped, that already sits on the header row.
+                     */
                     icon = when {
-                        // An arrow in the icon slot, where the eye already is. Bold alone proved far too
-                        // quiet on an id as short as "PC-1" — it was being applied and still went unseen.
                         active -> AllIcons.Actions.Forward
-                        // When flat (ungrouped), prepend the server icon so the task's origin is visible;
-                        // when grouped, the server icon already sits on the parent header row.
                         groupByServer -> obj.decoration?.icon
                             ?: taskIcons.getOrPut(task.icon) { FallbackIcon(task.icon, obj.repository.icon) }
                         else -> obj.repository.icon
@@ -1059,8 +1074,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         override fun createDefaultColumnModel(): TableColumnModel = PinnedFirstColumnModel()
 
-        // Refuse to start a drag on the pinned ID column: returning without setting the dragged
-        // column means the header never animates it, so there is no flicker/snap-back.
+        /**
+         * Refuses to start a drag on the pinned ID column: returning without setting the dragged column
+         * means the header never animates it, so there is no flicker/snap-back.
+         */
         override fun createDefaultTableHeader(): JTableHeader = object : JBTableHeader() {
             override fun setDraggedColumn(column: TableColumn?) {
                 if (column != null && columnModel.columnCount > 0 && column === columnModel.getColumn(ID_COLUMN)) {

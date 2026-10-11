@@ -328,8 +328,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             return
         }
 
-        // Moving to a different task abandons anything half-typed; staying on the same one must not,
-        // because a save triggers a re-read that comes straight back through here.
+        /*
+         * Moving to a different task abandons anything half-typed; staying on the same one must not,
+         * because a save triggers a re-read that comes straight back through here.
+         */
         if (task.id != currentTaskId) {
             currentTaskId = task.id
             exitSummaryEdit()
@@ -453,8 +455,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
     private fun beginDescriptionEdit() {
         if (editingDescription) return
-        // The text to edit may have to be fetched: GitLab's Task carries no description even when the
-        // issue has one. The callback only fires on success, so a failed read leaves read mode intact.
+        /*
+         * The text to edit may have to be fetched: GitLab's Task carries no description even when the
+         * issue has one. The callback only fires on success, so a failed read leaves read mode intact.
+         */
         edits.loadDescription { current ->
             editingDescription = true
             swap(descriptionBody, descriptionEditor)
@@ -582,12 +586,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         val canComment = editor?.canComment(task) == true
         commentField.isEnabled = canComment
         sendButton.isEnabled = canComment
-        // The composer has no label of its own, so the empty text carries the explanation the greyed
-        // links used to give.
+        // The composer has no label of its own, so its empty text carries the explanation.
         commentField.emptyText.text = if (canComment) "Add a comment…" else reason
     }
-
-    // ---- comment rendering -----------------------------------------------------------------------
 
     // ---- pull requests ---------------------------------------------------------------------------
 
@@ -636,11 +637,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         }
     }
 
-    private fun commentsHeadingText(comments: List<Comment>, loadingComments: Boolean): String = when {
-        loadingComments -> "COMMENTS"
-        comments.isEmpty() -> "COMMENTS"
-        else -> "COMMENTS (${comments.size})"
-    }
+    // ---- comment rendering -----------------------------------------------------------------------
+
+    private fun commentsHeadingText(comments: List<Comment>, loadingComments: Boolean): String =
+        if (loadingComments || comments.isEmpty()) "COMMENTS" else "COMMENTS (${comments.size})"
 
     private fun renderComments(comments: List<Comment>, loadingComments: Boolean) {
         commentsList.removeAll()
@@ -857,13 +857,17 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         InplaceButton(tooltip, icon, ActionListener { action() }) {
 
         init {
-            // Breathing room around the 16px glyph, so the highlight reads as a button rather than as a
-            // box drawn tight around the icon. InplaceButton centers its icon in whatever size the
-            // component ends up with, so growing it is all that is needed.
+            /*
+             * Breathing room around the 16px glyph, so the highlight reads as a button rather than as a
+             * box drawn tight around the icon. InplaceButton centers its icon in whatever size the
+             * component ends up with, so growing it is all that is needed.
+             */
             val pad = JBUI.scale(6)
             preferredSize = Dimension(icon.iconWidth + pad, icon.iconHeight + pad)
-            // Routed through setEnabled rather than assigning the cursor here, so the starting state and
-            // every later change come from one place.
+            /*
+             * Routed through setEnabled rather than assigning the cursor here, so the starting state and
+             * every later change come from one place.
+             */
             isEnabled = true
         }
 
@@ -940,8 +944,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         /** Only as wide as the text actually needs, up to whatever is left once the pen has its place. */
         private fun textWidth(available: Int): Int {
             val room = max(JBUI.scale(60), available - gap - pen.preferredSize.width)
-            // While typing, the field keeps the whole column: a box creeping wider a character at a time
-            // would be more distracting than one that simply looks like a field from the start.
+            /*
+             * While typing, the field keeps the whole column: a box creeping wider a character at a time
+             * would be more distracting than one that simply looks like a field from the start.
+             */
             return if (text.isEditable) room else min(text.naturalWidth(), room)
         }
 
@@ -1158,8 +1164,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         /** The width the text would take if nothing wrapped it. */
         fun naturalWidth(): Int {
             val metrics = getFontMetrics(font)
-            // A couple of pixels of slack: FontMetrics rounds per string, and rounding short by one would
-            // wrap the last word onto a line of its own.
+            /*
+             * A couple of pixels of slack: FontMetrics rounds per string, and rounding short by one would
+             * wrap the last word onto a line of its own.
+             */
             return text.lineSequence().maxOf(metrics::stringWidth) + insets.left + insets.right + JBUI.scale(2)
         }
 
@@ -1185,7 +1193,6 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** Replies deeper than this stop indenting further. */
         const val MAX_REPLY_DEPTH = 3
-
 
         private val IMG_SRC = Regex("""<img[^>]*\ssrc\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 
