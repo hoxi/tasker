@@ -789,6 +789,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         override fun postComment(text: String) =
             write("Posting comment…") { editor, task -> editor.addComment(task, text) }
+
+        override fun saveComment(comment: Comment, text: String) =
+            write("Updating comment…") { editor, task -> editor.editComment(task, comment, text) }
     }
 
     /** Resolves the selection and its adapter, then hands the write off to [applyWrite]. */

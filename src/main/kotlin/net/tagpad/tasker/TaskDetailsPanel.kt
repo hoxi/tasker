@@ -14,6 +14,7 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
+import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -24,6 +25,7 @@ import java.awt.CardLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
+import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.GridBagConstraints
@@ -84,6 +86,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         fun saveDescription(text: String)
 
         fun postComment(text: String)
+
+        fun saveComment(comment: Comment, text: String)
     }
 
     // ---- header ----------------------------------------------------------------------------------
@@ -144,51 +148,27 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private val descriptionPen = PenButton("Edit description") { beginDescriptionEdit() }
     private val descriptionText = WrappingText(JBFont.regular())
 
-    private val descriptionEditButtons = JPanel().apply {
+    private val descriptionEditor = InlineEditor(JBFont.regular(), ::commitDescriptionEdit, ::cancelDescriptionEdit)
+
+    /** Holds the description's read view or its editor, whichever is current. */
+    private val descriptionBody = JPanel(BorderLayout()).apply {
         isOpaque = false
-        layout = BoxLayout(this, BoxLayout.X_AXIS)
-        add(JButton("Save").apply { font = JBFont.small(); addActionListener { commitDescriptionEdit() } })
-        add(Box.createHorizontalStrut(JBUI.scale(6)))
-        add(JButton("Cancel").apply { font = JBFont.small(); addActionListener { cancelDescriptionEdit() } })
-        add(Box.createHorizontalGlue())
-        isVisible = false
+        add(descriptionText, BorderLayout.CENTER)
     }
 
     private val descriptionSection = JPanel(BorderLayout()).apply {
         isOpaque = false
         add(headingRow("DESCRIPTION", descriptionPen), BorderLayout.NORTH)
-        add(descriptionText, BorderLayout.CENTER)
-        add(descriptionEditButtons, BorderLayout.SOUTH)
+        add(descriptionBody, BorderLayout.CENTER)
     }
 
     private val commentsHeading = sectionLabel("COMMENTS")
 
-    private val commentsPane = JEditorPane().apply {
-        editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
-        isEditable = false
-        isOpaque = false
-        // Let the HTML inherit the component font, so sizes track the IDE's font settings and DPI
-        // instead of being hardcoded in the stylesheet.
-        putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
-        font = JBFont.regular()
-        border = JBUI.Borders.empty()
-        addHyperlinkListener { e ->
-            if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
-                val target = e.url?.toString() ?: e.description
-                if (!target.isNullOrBlank()) BrowserUtil.browse(target)
-            }
-        }
-        // Wrapped text can't report a height until it has a width, and nothing else re-asks once the
-        // column hands it one. Same problem WrappingText solves for itself.
-        addComponentListener(object : ComponentAdapter() {
-            private var measuredAt = -1
-            override fun componentResized(e: ComponentEvent) {
-                if (width == measuredAt) return
-                measuredAt = width
-                revalidate()
-            }
-        })
-    }
+    /**
+     * One [CommentView] per comment, or a single message while there are none to show. Each comment is
+     * its own pane, rather than one document for all of them, so one can turn into an editor in place.
+     */
+    private val commentsList = JPanel(VerticalLayout(0)).apply { isOpaque = false }
 
     private val bodyColumn = BodyColumn().apply {
         border = JBUI.Borders.empty(10, 16, 16, 16)
@@ -201,7 +181,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         }
         add(descriptionSection, c)
         add(commentsHeading, c.apply { gridy = 1; insets = JBUI.insetsTop(16) })
-        add(commentsPane, c.apply { gridy = 2; insets = JBUI.insetsTop(6) })
+        add(commentsList, c.apply { gridy = 2; insets = JBUI.insetsTop(6) })
         // Soaks up leftover height so a short task's content stays at the top.
         add(Box.createVerticalGlue(), c.apply { gridy = 3; weighty = 1.0; fill = GridBagConstraints.BOTH; insets = JBUI.emptyInsets() })
     }
@@ -275,12 +255,25 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     /** The summary as last rendered, for the same reason. */
     private var shownSummary = ""
 
+    /** The task on display and its adapter, which decide per comment whether it gets a pen. */
+    private var shownTask: Task? = null
+    private var shownEditor: TaskEditor? = null
+
+    /** The comment being rewritten in place, if any. */
+    private var editingComment: CommentView? = null
+
+    /**
+     * Comments that arrived while one was being edited. Rendering them would replace the view the edit
+     * lives in, so they wait for the edit to end.
+     */
+    private var pendingComments: Pair<List<Comment>, Boolean>? = null
+
     init {
         bindKey(summaryText, KeyEvent.VK_ENTER, "commitSummary") { commitSummaryEdit() }
         bindKey(summaryText, KeyEvent.VK_ESCAPE, "cancelSummary") { cancelSummaryEdit() }
-        bindKey(descriptionText, KeyEvent.VK_ESCAPE, "cancelDescription") { cancelDescriptionEdit() }
         // Plain Enter sends; Shift+Enter isn't bound here so it falls through to inserting a newline.
         bindKey(commentField, KeyEvent.VK_ENTER, "sendComment") { sendComment() }
+        bindKey(commentField, KeyEvent.VK_ESCAPE, "cancelComment") { cancelComment() }
 
         add(cards, BorderLayout.CENTER)
         show(null)
@@ -314,9 +307,11 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             currentTaskId = task.id
             exitSummaryEdit()
             exitDescriptionEdit()
+            exitCommentEdit()
             commentField.text = ""
         }
 
+        shownTask = task
         updateEditActions(task, repository)
 
         idLabel.text = task.presentableId
@@ -334,8 +329,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         val shownComments = comments ?: task.comments.toList()
         commentsHeading.text = commentsHeadingText(shownComments, loadingComments)
-        commentsPane.text = renderComments(shownComments, loadingComments)
-        commentsPane.caretPosition = 0
+        if (editingComment == null) renderComments(shownComments, loadingComments)
+        else pendingComments = shownComments to loadingComments
 
         cardLayout.show(cards, CARD_TASK)
         header.revalidate()
@@ -416,17 +411,13 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         // issue has one. The callback only fires on success, so a failed read leaves read mode intact.
         edits.loadDescription { current ->
             editingDescription = true
-            descriptionText.setEditing(true)
-            descriptionText.text = current
-            descriptionEditButtons.isVisible = true
-            descriptionText.requestFocusInWindow()
-            bodyColumn.revalidate()
+            swap(descriptionBody, descriptionEditor)
+            descriptionEditor.start(current)
         }
     }
 
-    private fun commitDescriptionEdit() {
+    private fun commitDescriptionEdit(text: String) {
         if (!editingDescription) return
-        val text = descriptionText.text
         exitDescriptionEdit()
         edits.saveDescription(text)
     }
@@ -437,25 +428,34 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     private fun exitDescriptionEdit() {
-        // Save and Cancel are about to be hidden. Swing hands the focus of a component it hides to
-        // whatever comes next in the traversal order, which is nowhere near here — the toolbar's task
-        // limit spinner, in practice, left wearing a focus ring for no reason. Take the focus back.
-        // Only when the edit actually held it: this same exit runs when the selection moves to another
-        // task, and stealing focus off the list at that point would be the worse bug.
-        val heldFocus = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
-            ?.let { SwingUtilities.isDescendingFrom(it, descriptionSection) } == true
+        if (!editingDescription) return
+        val heldFocus = holdsFocus(descriptionSection)
 
         editingDescription = false
-        descriptionText.setEditing(false)
-        descriptionEditButtons.isVisible = false
+        swap(descriptionBody, descriptionText)
         renderDescription()
-        bodyColumn.revalidate()
 
-        /*
-         * In read mode the text area has no border, and setEditing(false) hides its caret, so this parks
-         * the focus without marking anything.
-         */
+        // The read view is never editable, so it draws no caret: this parks the focus without marking anything.
         if (heldFocus) descriptionText.requestFocusInWindow()
+    }
+
+    /**
+     * Whether the focus is inside [component]. The editor is about to be removed, and Swing hands the
+     * focus of a removed component to whatever comes next in the traversal order — nowhere near here;
+     * the toolbar's task limit spinner, in practice, left wearing a focus ring for no reason. So an
+     * edit that held the focus takes it back. Only one that held it: the same exits run when the
+     * selection moves to another task, and stealing focus off the list then would be the worse bug.
+     */
+    private fun holdsFocus(component: JComponent): Boolean =
+        KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+            ?.let { SwingUtilities.isDescendingFrom(it, component) } == true
+
+    /** Makes [content] the one thing [holder] shows. */
+    private fun swap(holder: JPanel, content: JComponent) {
+        holder.removeAll()
+        holder.add(content, BorderLayout.CENTER)
+        holder.revalidate()
+        holder.repaint()
     }
 
     /** Read mode. An absent description still shows the section, since the pen is how you add one. */
@@ -474,12 +474,58 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     /**
+     * Esc in the composer, the way it works in the title and description editors: the draft is
+     * discarded and the focus leaves, parked on the description's read view, which draws no caret.
+     */
+    private fun cancelComment() {
+        commentField.text = ""
+        descriptionText.requestFocusInWindow()
+    }
+
+    /** Turns [view] into an editor in place, starting from the comment's text as the tracker stores it. */
+    private fun beginCommentEdit(view: CommentView) {
+        val source = (view.comment as? EditableComment)?.source ?: return
+        if (editingComment === view) return
+        exitCommentEdit() // one comment at a time
+        editingComment = view
+        view.setEditing(true)
+        view.editor.start(source)
+    }
+
+    private fun commitCommentEdit(view: CommentView, text: String) {
+        if (editingComment !== view) return
+        val body = text.trim()
+        // Blank would erase the comment rather than edit it; stay in the editor instead.
+        if (body.isEmpty()) return
+        exitCommentEdit()
+        edits.saveComment(view.comment, body)
+    }
+
+    private fun cancelCommentEdit() = exitCommentEdit()
+
+    /** Back to reading, then catches up on any comments that arrived during the edit. */
+    private fun exitCommentEdit() {
+        val view = editingComment ?: return
+        val heldFocus = holdsFocus(view)
+        editingComment = null
+        view.setEditing(false)
+
+        pendingComments?.let { (comments, loading) ->
+            pendingComments = null
+            renderComments(comments, loading)
+        }
+        // See holdsFocus. The view may have been replaced by now, so park on whichever comment comes first.
+        if (heldFocus) UIUtil.findComponentOfType(commentsList, JEditorPane::class.java)?.requestFocusInWindow()
+    }
+
+    /**
      * An action is offered only when the provider has an adapter *and* that adapter can address this
      * particular task; the messages distinguish the two, since "YouTrack can't do this" and "this issue
      * has no usable url" are different problems.
      */
     private fun updateEditActions(task: Task, repository: TaskRepository?) {
         val editor = repository?.let(TaskEditors::forRepository)
+        shownEditor = editor
         val reason =
             if (editor == null) "Not supported for ${repository?.repositoryType?.name ?: "this server"}"
             else "Not available for this task"
@@ -503,14 +549,55 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         else -> "COMMENTS (${comments.size})"
     }
 
-    private fun renderComments(comments: List<Comment>, loadingComments: Boolean): String {
-        val sb = StringBuilder("<html><head><style>").append(css()).append("</style></head><body>")
+    private fun renderComments(comments: List<Comment>, loadingComments: Boolean) {
+        commentsList.removeAll()
         when {
-            loadingComments -> sb.append("<div class='muted'>Loading…</div>")
-            comments.isEmpty() -> sb.append("<div class='muted'>No comments.</div>")
-            else -> for ((comment, depth) in threaded(comments)) appendComment(sb, comment, depth)
+            loadingComments -> commentsList.add(messagePane("Loading…"))
+            comments.isEmpty() -> commentsList.add(messagePane("No comments."))
+            else -> for ((comment, depth) in threaded(comments)) commentsList.add(CommentView(comment, depth))
         }
-        return sb.append("</body></html>").toString()
+        commentsList.revalidate()
+        commentsList.repaint()
+    }
+
+    private fun messagePane(message: String): JEditorPane =
+        htmlPane().apply { setHtml(this, "<div class='muted'>${esc(message)}</div>") }
+
+    /** Loads [body] into [pane] with the pane's stylesheet, scrolled to its start. */
+    private fun setHtml(pane: JEditorPane, body: String) {
+        pane.text = "<html><head><style>${css()}</style></head><body>$body</body></html>"
+        pane.caretPosition = 0
+    }
+
+    /** A read-only HTML pane for comment content, whose links open in the browser. */
+    private fun htmlPane(): JEditorPane = JEditorPane().apply {
+        editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
+        isEditable = false
+        isOpaque = false
+        /*
+         * Let the HTML inherit the component font, so sizes track the IDE's font settings and DPI
+         * instead of being hardcoded in the stylesheet.
+         */
+        putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, true)
+        font = JBFont.regular()
+        border = JBUI.Borders.empty()
+        addHyperlinkListener { e ->
+            if (e.eventType != HyperlinkEvent.EventType.ACTIVATED) return@addHyperlinkListener
+            val target = e.url?.toString() ?: e.description
+            if (!target.isNullOrBlank()) BrowserUtil.browse(target)
+        }
+        /*
+         * Wrapped text can't report a height until it has a width, and nothing else re-asks once the
+         * column hands it one. Same problem WrappingText solves for itself.
+         */
+        addComponentListener(object : ComponentAdapter() {
+            private var measuredAt = -1
+            override fun componentResized(e: ComponentEvent) {
+                if (width == measuredAt) return
+                measuredAt = width
+                revalidate()
+            }
+        })
     }
 
     /**
@@ -541,39 +628,38 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     /**
-     * Renders a comment with our own byline instead of [Comment.appendTo], whose default emits an
-     * unstyled `<hr><b>Author:</b>…` block we can't restyle.
-     *
-     * The body is **not** escaped: trackers hand back rendered HTML here (GitHub's comment text is the
-     * issue's `body_html`), which is also why the platform's own renderer passes it through untouched.
-     * The description is the opposite case — raw markdown — which is part of why it now lives outside
-     * this pane entirely.
+     * A comment's byline — avatar, author, date — in our own markup rather than [Comment.appendTo]'s,
+     * whose default emits an unstyled `<hr><b>Author:</b>…` block we can't restyle. Empty when the
+     * comment has none of the three.
      */
-    private fun appendComment(sb: StringBuilder, comment: Comment, depth: Int) {
+    private fun bylineHtml(comment: Comment): String {
         val byline = listOfNotNull(
             comment.author?.takeIf { it.isNotBlank() },
             comment.date?.let(::formatDate)?.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
         val avatar = avatarUrl(comment)
+        if (avatar == null && byline.isEmpty()) return ""
 
-        /*
-         * A reply starts where its parent's text does, past the avatar, so the thread reads as one block.
-         * Capped, so a long chain of replies can't push the text out of a narrow pane.
-         */
-        val indent = JBUI.scale(AVATAR_SIZE + REPLY_INDENT_GAP) * depth.coerceAtMost(MAX_REPLY_DEPTH)
-        sb.append("<div class='comment'")
-        if (indent > 0) sb.append(" style='margin-left: ").append(indent).append("px'")
-        sb.append(">")
-        if (avatar != null || byline.isNotEmpty()) {
-            sb.append("<div class='byline'>")
-            if (avatar != null) {
-                val size = JBUI.scale(AVATAR_SIZE)
-                sb.append("<img src='").append(esc(avatar))
-                    .append("' width='").append(size).append("' height='").append(size)
-                    .append("' align='middle'>&nbsp;")
-            }
-            sb.append(esc(byline)).append("</div>")
+        val sb = StringBuilder("<div class='byline'>")
+        if (avatar != null) {
+            val size = JBUI.scale(AVATAR_SIZE)
+            sb.append("<img src='").append(esc(avatar))
+                .append("' width='").append(size).append("' height='").append(size)
+                .append("' align='middle'>&nbsp;")
         }
+        return sb.append(esc(byline)).append("</div>").toString()
+    }
+
+    /**
+     * A comment's text and reactions.
+     *
+     * The text is **not** escaped: trackers hand back rendered HTML here (GitHub's comment text is the
+     * issue's `body_html`), which is also why the platform's own renderer passes it through untouched.
+     * The description is the opposite case — raw markdown — which is part of why it lives outside these
+     * panes entirely.
+     */
+    private fun bodyHtml(comment: Comment): String {
+        val sb = StringBuilder("<div class='comment'>")
         sb.append("<div class='text'>").append(comment.text.orEmpty()).append("</div>")
         val reactions = (comment as? ReactableComment)?.reactions.orEmpty().filter { it.count > 0 }
         if (reactions.isNotEmpty()) {
@@ -585,7 +671,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             }
             sb.append("</div>")
         }
-        sb.append("</div>")
+        return sb.append("</div>").toString()
     }
 
     /**
@@ -605,14 +691,14 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             else -> rendered.indexOf(text).takeIf { it >= 0 }?.let { rendered.substring(0, it) } ?: return null
         }
         /*
-         * The url comes out of an HTML attribute, so it is still entity-encoded; appendComment encodes it
+         * The url comes out of an HTML attribute, so it is still entity-encoded; bylineHtml encodes it
          * again, and a url carrying "&amp;" would arrive at the server as "&amp;amp;".
          */
         return IMG_SRC.find(header)?.groupValues?.get(1)?.let(StringUtil::unescapeXmlEntities)
     }
 
     /**
-     * Sizes are relative keywords, not point values, so the body follows [commentsPane]'s font. Colors
+     * Sizes are relative keywords, not point values, so the body follows each [htmlPane]'s font. Colors
      * have to be baked in per render — the stylesheet can't reference theme colors symbolically — which
      * is fine, since a theme switch re-renders the pane anyway.
      */
@@ -808,6 +894,91 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     /**
+     * The editing half of an in-place edit: a text area in edit mode with Save and Cancel under it, and
+     * Esc to cancel. Shared by the description and every comment, so the two edit alike.
+     *
+     * Enter is left to insert a newline, since both hold multi-line text.
+     */
+    private inner class InlineEditor(
+        textFont: Font,
+        onSave: (String) -> Unit,
+        onCancel: () -> Unit,
+    ) : JPanel(BorderLayout()) {
+
+        private val textArea = WrappingText(textFont).apply { setEditing(true) }
+
+        init {
+            isOpaque = false
+            add(textArea, BorderLayout.CENTER)
+            add(
+                JPanel().apply {
+                    isOpaque = false
+                    layout = BoxLayout(this, BoxLayout.X_AXIS)
+                    add(JButton("Save").apply { font = JBFont.small(); addActionListener { onSave(textArea.text) } })
+                    add(Box.createHorizontalStrut(JBUI.scale(6)))
+                    add(JButton("Cancel").apply { font = JBFont.small(); addActionListener { onCancel() } })
+                    add(Box.createHorizontalGlue())
+                },
+                BorderLayout.SOUTH,
+            )
+            bindKey(textArea, KeyEvent.VK_ESCAPE, "cancelEdit") { onCancel() }
+        }
+
+        /** Fills the editor with [text] and gives it the focus. */
+        fun start(text: String) {
+            textArea.text = text
+            textArea.requestFocusInWindow()
+        }
+    }
+
+    /**
+     * One comment: a byline row, then its text and reactions. While it is being edited an
+     * [InlineEditor] takes the text's place, under a byline that stays put.
+     *
+     * The byline is a pane of its own, sized to its content, so the pen can be a real [PenButton] tucked
+     * in after it — with the hover highlight and the full click target the title's and description's
+     * pens have, neither of which an icon drawn inside the HTML could offer.
+     *
+     * A reply is indented to start where its parent's text does, past the avatar, so the thread reads
+     * as one block — capped, so a long chain of replies can't push the text out of a narrow pane.
+     */
+    private inner class CommentView(val comment: Comment, depth: Int) : JPanel(BorderLayout()) {
+
+        private val body = htmlPane().apply { setHtml(this, bodyHtml(comment)) }
+
+        val editor = InlineEditor(JBFont.regular(), { commitCommentEdit(this, it) }, ::cancelCommentEdit).apply {
+            // The gap a comment's text leaves below itself, kept while the editor stands in for it.
+            border = JBUI.Borders.emptyBottom(14)
+        }
+
+        init {
+            isOpaque = false
+            val indent = JBUI.scale(AVATAR_SIZE + REPLY_INDENT_GAP) * depth.coerceAtMost(MAX_REPLY_DEPTH)
+            border = JBUI.Borders.emptyLeft(indent)
+
+            // FlowLayout centres each component in the row's height, so the pen lines up with the avatar and text.
+            val bylineRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false }
+            bylineHtml(comment).takeIf { it.isNotEmpty() }?.let { html ->
+                bylineRow.add(htmlPane().apply { setHtml(this, html) })
+            }
+            val task = shownTask
+            if (task != null && shownEditor?.canEditComment(task, comment) == true) {
+                bylineRow.add(Box.createHorizontalStrut(JBUI.scale(4)))
+                bylineRow.add(PenButton("Edit comment") { beginCommentEdit(this) }.apply { setState(true, "") })
+            }
+            if (bylineRow.componentCount > 0) add(bylineRow, BorderLayout.NORTH)
+            add(body, BorderLayout.CENTER)
+        }
+
+        fun setEditing(editing: Boolean) {
+            remove(if (editing) body else editor)
+            add(if (editing) editor else body, BorderLayout.CENTER)
+            revalidate()
+            repaint()
+        }
+    }
+
+    /**
      * A word-wrapping text block that doubles as its own editor.
      *
      * Toggling [setEditing] in place, rather than swapping in a separate field, keeps the text at the
@@ -899,6 +1070,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** Replies deeper than this stop indenting further. */
         const val MAX_REPLY_DEPTH = 3
+
 
         private val IMG_SRC = Regex("""<img[^>]*\ssrc\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 

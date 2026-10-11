@@ -50,20 +50,48 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
      */
     override fun comments(task: Task): List<Comment>? {
         val endpoint = endpoint(task) ?: return null
-        // The html media type is what puts body_html in the response, rendered as on github.com.
-        val headers = headers() + ("Accept" to "application/vnd.github.html+json")
+        // The full media type returns body_html, rendered as on github.com, and the markdown body an edit starts from.
+        val headers = headers() + ("Accept" to "application/vnd.github.full+json")
+        val me = currentUser(endpoint)
 
         val comments = ArrayList<Comment>()
         for (page in 1..MAX_COMMENT_PAGES) {
             val batch = readJsonObjects("$endpoint/comments?per_page=$COMMENTS_PER_PAGE&page=$page", headers)
-            batch.mapTo(comments, ::GitHubComment)
+            batch.mapTo(comments) { GitHubComment(it, me) }
             if (batch.size < COMMENTS_PER_PAGE) break
         }
         return comments
     }
 
-    private class GitHubComment(json: JsonObject) : Comment(), ReactableComment {
+    override fun canEditComment(task: Task, comment: Comment): Boolean =
+        (comment as? GitHubComment)?.let { it.isMine && it.apiUrl != null } == true && token() != null
+
+    /**
+     * Sent to the comment's own API url. GitHub addresses comments per repository rather than per issue,
+     * so this is the one write that can't be derived from the issue endpoint.
+     */
+    override fun editComment(task: Task, comment: Comment, body: String) {
+        val url = (comment as? GitHubComment)?.apiUrl ?: error("This comment can't be addressed on GitHub")
+        val payload = JsonObject().apply { addProperty("body", body) }
+        HttpRequests.patch(url, JSON_CONTENT_TYPE).sendJson(payload, headers())
+    }
+
+    /** The token owner's login, from the API host the issue [endpoint] lives on. */
+    private fun currentUser(endpoint: String): String? = repository.currentUserId {
+        readJsonObject(endpoint.substringBefore("/repos/") + "/user", headers()).stringOrEmpty("login")
+    }
+
+    private class GitHubComment(json: JsonObject, me: String?) : Comment(), ReactableComment, EditableComment {
         private val user = json.objectOrNull("user")
+
+        override val commentId: String = json.idOrEmpty("id")
+
+        override val isMine: Boolean = me != null && user?.stringOrEmpty("login").equals(me, ignoreCase = true)
+
+        /** Markdown, as GitHub stores it and takes it back. */
+        override val source: String = json.stringOrEmpty("body")
+
+        val apiUrl: String? = json.stringOrEmpty("url").takeIf { it.isNotBlank() }
         private val html = json.stringOrEmpty("body_html").ifBlank {
             StringUtil.escapeXmlEntities(json.stringOrEmpty("body")).replace("\n", "<br>")
         }

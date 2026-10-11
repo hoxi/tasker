@@ -8,6 +8,7 @@ import com.intellij.util.io.HttpRequests
 import com.intellij.util.io.RequestBuilder
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
 
 /** Shared plumbing for the REST calls the tasks API can't make for us. */
 
@@ -101,6 +102,22 @@ internal fun TaskRepository.credentialsOrNull(): Pair<String, String>? {
     val secret = base.password?.takeIf { it.isNotBlank() } ?: return null
     return base.username.orEmpty() to secret
 }
+
+/**
+ * Who this server's credentials belong to, as the tracker identifies its users — so a comment can be
+ * recognised as the user's own. Read through [read] once per server and credentials, then remembered
+ * for the session; a failed read is not remembered, and answers null.
+ */
+internal fun TaskRepository.currentUserId(read: () -> String?): String? {
+    val (username, secret) = credentialsOrNull() ?: return null
+    val key = "$url|$username|${secret.hashCode()}"
+    CURRENT_USERS[key]?.let { return it }
+    val id = runCatching(read).getOrNull()?.takeIf { it.isNotBlank() } ?: return null
+    CURRENT_USERS[key] = id
+    return id
+}
+
+private val CURRENT_USERS = ConcurrentHashMap<String, String>()
 
 /** The server root with any trailing slash removed, or null when it isn't set. */
 internal fun TaskRepository.baseUrlOrNull(): String? = url?.trimEnd('/')?.takeIf { it.isNotBlank() }
