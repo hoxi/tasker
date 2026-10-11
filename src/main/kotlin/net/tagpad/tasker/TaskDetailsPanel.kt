@@ -272,6 +272,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     /** The description as last rendered, so cancelling an edit can restore it. */
     private var shownDescription = ""
 
+    /** The summary as last rendered, for the same reason. */
+    private var shownSummary = ""
+
     init {
         bindKey(summaryText, KeyEvent.VK_ENTER, "commitSummary") { commitSummaryEdit() }
         bindKey(summaryText, KeyEvent.VK_ESCAPE, "cancelSummary") { cancelSummaryEdit() }
@@ -317,7 +320,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         idLabel.text = task.presentableId
         issueUrl = task.issueUrl?.takeIf { it.isNotBlank() }
         browserLink.isVisible = issueUrl != null
-        if (!editingSummary) summaryText.text = task.summary
+        shownSummary = task.summary.orEmpty()
+        if (!editingSummary) summaryText.text = shownSummary
         statusBadge.setStatus(status ?: statusText(task))
         createdField.setValue(formatDate(task.created))
         updatedField.setValue(formatDate(task.updated))
@@ -395,6 +399,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private fun cancelSummaryEdit() {
         if (!editingSummary) return
         exitSummaryEdit()
+        summaryText.text = shownSummary
     }
 
     private fun exitSummaryEdit() {
@@ -443,8 +448,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         renderDescription()
         bodyColumn.revalidate()
 
-        // A read-only text area draws no caret and, in read mode, no border either, so this parks the
-        // focus without marking anything.
+        // In read mode the text area has no border, and setEditing(false) hides its caret, so this parks
+        // the focus without marking anything.
         if (heldFocus) descriptionText.requestFocusInWindow()
     }
 
@@ -789,6 +794,13 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
                 null
             }
             foreground = UIUtil.getLabelForeground()
+            /*
+             * Turning editable off leaves a focused text area exactly as it was: caret blinking and any
+             * selection still painted, since DefaultCaret only consults isEditable when focus arrives.
+             * Read mode should look like a label, so drop both here rather than wait for focus to move.
+             */
+            if (!editing) select(0, 0)
+            caret.isVisible = editing && isFocusOwner
             revalidate()
             repaint()
         }
