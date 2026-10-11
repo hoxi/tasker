@@ -420,23 +420,38 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         rebuild()
 
         for (repo in repositories) {
-            if (!repo.isConfigured) continue
-            AppExecutorUtil.getAppExecutorService().execute {
-                val result = try {
-                    val issues = repo.getIssues(null, 0, limit, includeClosedNow, EmptyProgressIndicator())
-                    ServerGroup(repo, issues.toList(), null)
-                } catch (ce: ProcessCanceledException) {
-                    return@execute
-                } catch (ex: Exception) {
-                    ServerGroup(repo, emptyList(), ex.message ?: ex.javaClass.simpleName)
-                }
-                onEdt {
-                    if (generation != loadGeneration) return@onEdt // superseded by a newer refresh
-                    cache = cache.map { if (it.repository === repo) result else it }
-                    rebuild()
-                }
-                if (result.tasks.isNotEmpty()) decorate(repo, result.tasks, generation)
+            if (repo.isConfigured) loadServer(repo, generation, limit, includeClosedNow)
+        }
+    }
+
+    /**
+     * Fetches one server's list off the EDT and swaps it into [cache], unless a newer refresh has started
+     * since [generation]. [redrawDetails] makes the pane re-render the selected task from the new list
+     * even if the selection itself doesn't change.
+     */
+    private fun loadServer(
+        repo: TaskRepository,
+        generation: Int,
+        limit: Int,
+        includeClosed: Boolean,
+        redrawDetails: Boolean = false,
+    ) {
+        AppExecutorUtil.getAppExecutorService().execute {
+            val result = try {
+                val issues = repo.getIssues(null, 0, limit, includeClosed, EmptyProgressIndicator())
+                ServerGroup(repo, issues.toList(), null)
+            } catch (ce: ProcessCanceledException) {
+                return@execute
+            } catch (ex: Exception) {
+                ServerGroup(repo, emptyList(), ex.message ?: ex.javaClass.simpleName)
             }
+            onEdt {
+                if (generation != loadGeneration) return@onEdt // superseded by a newer refresh
+                cache = cache.map { if (it.repository === repo) result else it }
+                if (redrawDetails) currentDetailKey = null
+                rebuild()
+            }
+            if (result.tasks.isNotEmpty()) decorate(repo, result.tasks, generation)
         }
     }
 
@@ -770,6 +785,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             } catch (ce: ProcessCanceledException) {
                 return@execute
             } catch (ex: Exception) {
+                LOG.info("Could not read details for ${task.presentableId} on ${repository.presentableName}", ex)
                 return@execute // uncached, so the next visit tries again
             }
             onEdt {
@@ -984,6 +1000,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, progressTitle, false) {
             private var failure: Exception? = null
             private var refreshed: Task? = null
+            private var rereadFailed = false
             private var decorations: Map<String, TaskDecoration> = emptyMap()
             private var comments: List<Comment>? = null
 
@@ -998,7 +1015,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 }
                 refreshed = try {
                     repository.findTask(task.id)
+                } catch (ce: ProcessCanceledException) {
+                    throw ce
                 } catch (ex: Exception) {
+                    LOG.info("Could not re-read ${task.presentableId} after a write", ex)
+                    rereadFailed = true
                     null // the write landed; only the re-read failed
                 }
                 // A posted comment has to show up, and the task alone may not carry it.
@@ -1007,7 +1028,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 decorations = refreshed?.let { fresh ->
                     try {
                         TaskEditors.forRepository(repository)?.decorate(listOf(fresh))
+                    } catch (ce: ProcessCanceledException) {
+                        throw ce
                     } catch (ex: Exception) {
+                        LOG.info("Could not re-read the status of ${fresh.presentableId}", ex)
                         null
                     }
                 }.orEmpty()
@@ -1019,7 +1043,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (error != null) {
                     notifyFailure(progressTitle, error)
                 } else {
-                    applyEdited(repository, task.id, refreshed, decorations, comments)
+                    applyEdited(repository, task.id, refreshed, decorations, comments, rereadFailed)
                 }
             }
 
@@ -1058,6 +1082,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         refreshed: Task?,
         decorations: Map<String, TaskDecoration>,
         comments: List<Comment>?,
+        rereadFailed: Boolean,
     ) {
         val key = TaskKey(repository, taskId)
         if (refreshed == null || comments == null) {
@@ -1067,7 +1092,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             detailCache[key] = refreshed
             commentCache[key] = comments
         }
-        if (refreshed == null) return
+        if (refreshed == null) {
+            /*
+             * Answered, but with nothing: a connector without a single-issue lookup, such as Generic. Its
+             * list is then the only place the change shows, so that server is read again. Not after a
+             * failed re-read, though — on a flaky connection that would trade the list for an error.
+             */
+            if (!rereadFailed) loadServer(repository, loadGeneration, issueLimit, includeClosed, redrawDetails = true)
+            return
+        }
 
         cache = cache.map { group ->
             if (group.repository !== repository || group.tasks.none { it.id == taskId }) {
