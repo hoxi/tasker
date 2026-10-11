@@ -1,4 +1,4 @@
-package net.tagpad.tasker
+package net.tagpad.tasker.jira
 
 import com.google.gson.JsonObject
 import com.intellij.openapi.application.PathManager
@@ -9,6 +9,25 @@ import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
+import net.tagpad.tasker.EditableComment
+import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.TaskDecoration
+import net.tagpad.tasker.TaskEditor
+import net.tagpad.tasker.TaskEditors
+import net.tagpad.tasker.TaskExtras
+import net.tagpad.tasker.TaskLabel
+import net.tagpad.tasker.TaskPriority
+import net.tagpad.tasker.ThreadedComment
+import net.tagpad.tasker.addIfPresent
+import net.tagpad.tasker.baseUrlOrNull
+import net.tagpad.tasker.basicAuth
+import net.tagpad.tasker.credentialsOrNull
+import net.tagpad.tasker.currentUserId
+import net.tagpad.tasker.idOrEmpty
+import net.tagpad.tasker.objectOrNull
+import net.tagpad.tasker.readJsonObject
+import net.tagpad.tasker.sendJson
+import net.tagpad.tasker.stringOrEmpty
 import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets

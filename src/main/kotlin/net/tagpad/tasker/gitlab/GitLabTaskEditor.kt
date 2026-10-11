@@ -1,9 +1,21 @@
-package net.tagpad.tasker
+package net.tagpad.tasker.gitlab
 
 import com.google.gson.JsonObject
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
+import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.TaskEditor
+import net.tagpad.tasker.TaskExtras
+import net.tagpad.tasker.TaskLabel
+import net.tagpad.tasker.addIfPresent
+import net.tagpad.tasker.baseUrlOrNull
+import net.tagpad.tasker.credentialsOrNull
+import net.tagpad.tasker.mapArray
+import net.tagpad.tasker.objectOrNull
+import net.tagpad.tasker.readJsonObject
+import net.tagpad.tasker.sendJson
+import net.tagpad.tasker.stringOrEmpty
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
