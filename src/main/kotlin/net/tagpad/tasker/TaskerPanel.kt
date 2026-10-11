@@ -1,6 +1,7 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionGroup
@@ -230,6 +231,18 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             override fun taskAdded(task: LocalTask) = Unit
             override fun taskRemoved(task: LocalTask) = Unit
         }, this)
+
+        /*
+         * The comment panes bake the theme's colours into their stylesheet, so a theme switch redraws the
+         * pane from what is already cached. Same task, so any edit in progress is kept.
+         */
+        ApplicationManager.getApplication().messageBus.connect(this).subscribe(
+            LafManagerListener.TOPIC,
+            LafManagerListener {
+                currentDetailTaskId = null
+                updateDetailsFromSelection()
+            },
+        )
 
         treeTable.setRootVisible(false)
         treeTable.tree.showsRootHandles = true
