@@ -97,6 +97,8 @@ intellijPlatform {
     pluginVerification {
         ides {
             recommended()
+            // The oldest release pluginSinceBuild admits, which "recommended" doesn't promise to include.
+            create(org.jetbrains.intellij.platform.gradle.IntelliJPlatformType.IntellijIdea, "2026.1")
         }
     }
 
