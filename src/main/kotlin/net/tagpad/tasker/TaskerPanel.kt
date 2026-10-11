@@ -43,6 +43,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.treetable.ListTreeTableModelOnColumns
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.intellij.util.io.HttpRequests
 import com.intellij.util.ui.ColumnInfo
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
@@ -52,6 +53,7 @@ import java.awt.KeyboardFocusManager
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.beans.PropertyChangeListener
+import java.net.SocketTimeoutException
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -411,11 +413,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         AppExecutorUtil.getAppExecutorService().execute {
             val result = try {
                 val issues = repo.getIssues(null, 0, limit, includeClosed, EmptyProgressIndicator())
-                ServerGroup(repo, issues.toList(), null)
+                /*
+                 * Filtered again here, as the platform's own TaskManager does: connectors are asked to leave
+                 * closed issues out, but the older ones never see the flag, and not every one honours it.
+                 */
+                ServerGroup(repo, issues.filter { includeClosed || !it.isClosed }, null)
             } catch (ce: ProcessCanceledException) {
                 return@execute
             } catch (ex: Exception) {
-                ServerGroup(repo, emptyList(), ex.message ?: ex.javaClass.simpleName)
+                ServerGroup(repo, emptyList(), loadFailure(repo, ex))
             }
             onEdt {
                 if (generation != loadGeneration) return@onEdt // superseded by a newer refresh
@@ -642,12 +648,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private fun loadDetails(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
         AppExecutorUtil.getAppExecutorService().execute {
             /*
-             * A null answer is not a failure: findTask is @Nullable, and a connector with no single-issue
-             * lookup — Generic, unless one is configured — has nothing fuller than the listed task. That
-             * task is then the resolved one, and is cached like any other. Only a throw is retried.
+             * A null answer is not a failure: findTask is @Nullable, and a connector that can't find the
+             * issue on its own has nothing fuller than the listed task. That task is then the resolved one,
+             * and is cached like any other. Only a throw is retried — so a connector that is known to have
+             * no lookup at all isn't asked, rather than failing again on every visit.
              */
             val full = try {
-                repository.findTask(task.id) ?: task
+                if (lacksSingleTaskLookup(repository)) task else repository.findTask(task.id) ?: task
             } catch (ce: ProcessCanceledException) {
                 return@execute
             } catch (ex: Exception) {
@@ -668,6 +675,37 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 showingLoadingComments = false
                 showDetails(full ?: task, repository, key, loadingComments = false)
             }
+        }
+    }
+
+    /**
+     * Whether [repository] is a Generic server with no single-task url configured, which is its default.
+     * Its findTask then requests an empty url and fails, every time. The class lives in Task Management's
+     * own module, so the setting is read by name; any other server answers false.
+     */
+    private fun lacksSingleTaskLookup(repository: TaskRepository): Boolean =
+        runCatching { repository.javaClass.getMethod("getSingleTaskUrl").invoke(repository) as? String }
+            .getOrNull()?.isBlank() == true
+
+    /**
+     * What a server row says when its list failed, after logging the failure as the platform does.
+     *
+     * Only messages likely meant for a person are shown, by the platform's own rule — a plain Exception or
+     * its RequestFailedException, which connectors throw with something to say — plus an HTTP status, whose
+     * message is the server's own. Anything else is an internal error whose message would mean nothing on a
+     * server row, and the log has the details.
+     */
+    private fun loadFailure(repository: TaskRepository, ex: Exception): String {
+        val expected = ex is SocketTimeoutException || ex is HttpRequests.HttpStatusException
+        if (expected) LOG.warn("Can't connect to ${repository.presentableName}: ${ex.message}")
+        else LOG.warn("Can't load issues from ${repository.presentableName}", ex)
+
+        val meantForUsers = ex.javaClass == Exception::class.java || ex is HttpRequests.HttpStatusException ||
+            ex.javaClass.simpleName == "RequestFailedException"
+        return when {
+            meantForUsers && !ex.message.isNullOrBlank() -> ex.message.orEmpty()
+            ex is SocketTimeoutException -> "timed out"
+            else -> "could not load issues — see the IDE log"
         }
     }
 
