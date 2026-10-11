@@ -1,9 +1,12 @@
 package net.tagpad.tasker
 
 import com.google.gson.JsonObject
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
+import java.util.Date
 
 /**
  * Edits YouTrack issues over the `/api` REST endpoints.
@@ -30,6 +33,47 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         // YouTrack names the comment body "text", not "body".
         val payload = JsonObject().apply { addProperty("text", body) }
         HttpRequests.post("${requireEndpoint(task)}/comments", JSON_CONTENT_TYPE).sendJson(payload, headers())
+    }
+
+    /**
+     * Read here because the connector never does: `YouTrackTask.getComments()` returns an empty array
+     * unconditionally, and its issue query doesn't ask for comments to begin with.
+     *
+     * `textPreview` is YouTrack's own HTML rendering of the markdown, which is what the pane expects a
+     * comment body to be; the raw `text` is only the fallback, escaped.
+     */
+    override fun comments(task: Task): List<Comment> {
+        val fields = "text,textPreview,created,deleted,author(fullName,login,avatarUrl)"
+        return readJsonObjects("${requireEndpoint(task)}/comments?fields=$fields", headers())
+            .filterNot { it.get("deleted")?.takeIf { d -> d.isJsonPrimitive }?.asBoolean == true }
+            .map(::YouTrackComment)
+    }
+
+    private inner class YouTrackComment(json: JsonObject) : Comment() {
+        private val author = json.objectOrNull("author")
+        private val html = json.stringOrEmpty("textPreview").ifBlank {
+            StringUtil.escapeXmlEntities(json.stringOrEmpty("text")).replace("\n", "<br>")
+        }
+        private val created = json.get("created")?.takeIf { it.isJsonPrimitive }?.asLong?.let(::Date)
+
+        /** Hub hands out avatars as server-relative paths. */
+        private val avatar = author?.stringOrEmpty("avatarUrl")?.takeIf { it.isNotBlank() }?.let { url ->
+            if (url.startsWith("/")) repository.baseUrlOrNull()?.let { it + url } else url
+        }
+
+        override fun getText(): String = html
+
+        override fun getAuthor(): String? =
+            author?.let { it.stringOrEmpty("fullName").ifBlank { it.stringOrEmpty("login") } }
+                ?.takeIf { it.isNotBlank() }
+
+        override fun getDate(): Date? = created
+
+        /** Emits the avatar ahead of the body, which is where the details pane looks for one. */
+        override fun appendTo(builder: StringBuilder) {
+            if (avatar != null) builder.append("<img src='").append(StringUtil.escapeXmlEntities(avatar)).append("'>")
+            builder.append(html)
+        }
     }
 
     /** YouTrack updates entities with POST rather than PUT or PATCH. */

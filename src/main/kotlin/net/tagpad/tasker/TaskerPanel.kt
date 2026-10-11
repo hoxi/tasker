@@ -23,6 +23,7 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.tasks.Comment
 import com.intellij.tasks.CustomTaskState
 import com.intellij.tasks.actions.OpenTaskDialog
 import com.intellij.tasks.LocalTask
@@ -145,6 +146,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * visit instead of sticking as a permanent blank. EDT-only.
      */
     private val propertyCache = HashMap<DetailKey, List<TaskProperty>>()
+
+    /**
+     * The comments for each task in [detailCache], wherever they came from: the task itself, or the
+     * adapter for a provider whose task never carries any — see [TaskEditor.comments]. A task counts as
+     * resolved only once it has an entry here too. EDT-only.
+     */
+    private val commentCache = HashMap<DetailKey, List<Comment>>()
 
     /**
      * One [FallbackIcon] per task icon, so repaints reuse the same instance instead of filling the
@@ -319,6 +327,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // An explicit refresh means the user wants fresh comments — and a fresh assignee — too.
         detailCache.clear()
         propertyCache.clear()
+        commentCache.clear()
         taskIcons.clear()
 
         // Seed the cache so configured servers show up immediately as "loading".
@@ -509,7 +518,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
         loadExtraProperties(task, repository, key, requestId)
 
-        val resolved = detailCache[key] ?: task.takeIf { it.comments.isNotEmpty() }?.also { detailCache[key] = it }
+        val resolved = detailCache[key]?.takeIf { key in commentCache }
+            ?: task.takeIf { it.comments.isNotEmpty() }?.also {
+                detailCache[key] = it
+                commentCache[key] = it.comments.toList()
+            }
         if (resolved != null) {
             showDetails(resolved, repository, key, loadingComments = false)
             return
@@ -536,10 +549,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             } catch (ex: Exception) {
                 null
             }
+            val comments = full?.let { loadComments(repository, it) }
             ApplicationManager.getApplication().invokeLater {
                 // Cache before the staleness check: the result is still valid even if the selection moved on.
                 // Failures aren't cached, so they're retried on the next visit rather than sticking.
-                if (full != null) detailCache[key] = full
+                if (full != null && comments != null) {
+                    detailCache[key] = full
+                    commentCache[key] = comments
+                }
                 if (requestId != detailRequestId) return@invokeLater // selection moved on; its own timer now owns the pane
                 cancelLoadingLabel()
                 showingLoadingComments = false
@@ -566,8 +583,23 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             loadingComments = loadingComments,
             extra = extraFor(task, repository, key),
             status = decorationFor(repository, task.id)?.status,
+            comments = commentCache[key],
         )
     }
+
+    /**
+     * The comments for a freshly read [task]: the adapter's when it supplies its own, the task's otherwise.
+     * Null when the adapter's read failed. Hits the network, so call it off the EDT.
+     */
+    private fun loadComments(repository: TaskRepository, task: Task): List<Comment>? =
+        try {
+            TaskEditors.forRepository(repository)?.comments(task) ?: task.comments.toList()
+        } catch (ce: ProcessCanceledException) {
+            throw ce
+        } catch (ex: Exception) {
+            LOG.warn("Could not load comments for ${task.presentableId}", ex)
+            null
+        }
 
     /**
      * What the IDE itself knows, from the [LocalTask] behind this issue — which exists only once the
@@ -773,6 +805,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             private var failure: Exception? = null
             private var refreshed: Task? = null
             private var decorations: Map<String, TaskDecoration> = emptyMap()
+            private var comments: List<Comment>? = null
 
             override fun run(indicator: ProgressIndicator) {
                 try {
@@ -788,6 +821,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 } catch (ex: Exception) {
                     null // the write landed; only the re-read failed
                 }
+                // A posted comment has to show up, and the task alone may not carry it.
+                comments = refreshed?.let { loadComments(repository, it) }
                 // A status change is exactly what a stale decoration would get wrong, so re-read it too.
                 decorations = refreshed?.let { fresh ->
                     try {
@@ -803,7 +838,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (error != null) {
                     notifyFailure(progressTitle, error)
                 } else {
-                    applyEdited(repository, task.id, refreshed, decorations)
+                    applyEdited(repository, task.id, refreshed, decorations, comments)
                 }
             }
         })
@@ -814,14 +849,18 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         taskId: String,
         refreshed: Task?,
         decorations: Map<String, TaskDecoration>,
+        comments: List<Comment>?,
     ) {
         val key = DetailKey(repository.url, taskId)
-        if (refreshed == null) {
+        if (refreshed == null || comments == null) {
             detailCache.remove(key)
-            return
+            commentCache.remove(key)
+        } else {
+            detailCache[key] = refreshed
+            commentCache[key] = comments
         }
+        if (refreshed == null) return
 
-        detailCache[key] = refreshed
         cache = cache.map { group ->
             if (group.repository !== repository || group.tasks.none { it.id == taskId }) {
                 group

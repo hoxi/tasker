@@ -31,6 +31,13 @@ internal fun readJsonObject(url: String, headers: Map<String, String>): JsonObje
         JsonParser.parseString(request.readString()).asJsonObject
     }
 
+/** GETs a JSON array of objects, skipping any element that isn't one. */
+internal fun readJsonObjects(url: String, headers: Map<String, String>): List<JsonObject> =
+    HttpRequests.request(url).withHeaders(headers).connect { request ->
+        JsonParser.parseString(request.readString()).asJsonArray
+            .mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+    }
+
 private fun RequestBuilder.withHeaders(headers: Map<String, String>): RequestBuilder =
     tuner { connection -> headers.forEach { (name, value) -> connection.setRequestProperty(name, value) } }
 

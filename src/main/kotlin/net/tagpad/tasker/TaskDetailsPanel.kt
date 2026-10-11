@@ -290,7 +290,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      * [extra] are fields the caller resolved that the task itself can't carry — see
      * [TaskEditor.extraProperties]. They arrive late for some providers, which simply means another
      * [show] for the same task once they land. [status] overrides the task's own, for trackers whose
-     * [Task.getState] loses the name — see [TaskDecoration].
+     * [Task.getState] loses the name — see [TaskDecoration]. [comments] likewise stands in for
+     * [Task.getComments] when the caller fetched them separately — see [TaskEditor.comments].
      */
     fun show(
         task: Task?,
@@ -298,6 +299,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         loadingComments: Boolean = false,
         extra: List<TaskProperty> = emptyList(),
         status: String? = null,
+        comments: List<Comment>? = null,
     ) {
         if (task == null) {
             issueUrl = null
@@ -330,8 +332,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         shownDescription = task.description.orEmpty()
         if (!editingDescription) renderDescription()
 
-        commentsHeading.text = commentsHeadingText(task, loadingComments)
-        commentsPane.text = renderComments(task, loadingComments)
+        val shownComments = comments ?: task.comments.toList()
+        commentsHeading.text = commentsHeadingText(shownComments, loadingComments)
+        commentsPane.text = renderComments(shownComments, loadingComments)
         commentsPane.caretPosition = 0
 
         cardLayout.show(cards, CARD_TASK)
@@ -492,18 +495,18 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
     // ---- comment rendering -----------------------------------------------------------------------
 
-    private fun commentsHeadingText(task: Task, loadingComments: Boolean): String = when {
+    private fun commentsHeadingText(comments: List<Comment>, loadingComments: Boolean): String = when {
         loadingComments -> "COMMENTS"
-        task.comments.isEmpty() -> "COMMENTS"
-        else -> "COMMENTS (${task.comments.size})"
+        comments.isEmpty() -> "COMMENTS"
+        else -> "COMMENTS (${comments.size})"
     }
 
-    private fun renderComments(task: Task, loadingComments: Boolean): String {
+    private fun renderComments(comments: List<Comment>, loadingComments: Boolean): String {
         val sb = StringBuilder("<html><head><style>").append(css()).append("</style></head><body>")
         when {
             loadingComments -> sb.append("<div class='muted'>Loading…</div>")
-            task.comments.isEmpty() -> sb.append("<div class='muted'>No comments.</div>")
-            else -> for (comment in task.comments) appendComment(sb, comment)
+            comments.isEmpty() -> sb.append("<div class='muted'>No comments.</div>")
+            else -> for (comment in comments) appendComment(sb, comment)
         }
         return sb.append("</body></html>").toString()
     }
