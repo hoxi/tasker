@@ -176,6 +176,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     /** Pending deferred "Loading comments…" label, if a fetch is in flight. EDT-only. */
     private var loadingLabelTimer: Timer? = null
 
+    /** Reloads once the task limit has stopped changing. EDT-only. */
+    private val limitRefreshTimer = Timer(LIMIT_SETTLE_MS) { refresh() }.apply { isRepeats = false }
+
+    /** Pending reads for the selected task, until the selection has settled. EDT-only. */
+    private var selectionSettleTimer: Timer? = null
+
     /**
      * Whether the pane is currently admitting to a comment fetch.
      *
@@ -208,6 +214,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
         const val SORT_COLUMN_KEY = "tasker.sortColumn"
         const val SORT_ASCENDING_KEY = "tasker.sortAscending"
+
+        /** How long a selection has to stay put before its task is read from the server. */
+        const val SELECTION_SETTLE_MS = 150
+
+        /** How long the task limit has to stay put before the servers are asked again. */
+        const val LIMIT_SETTLE_MS = 500
 
         /** Grace period before admitting to a comment fetch; servers that answer inside it never flash the label. */
         const val LOADING_LABEL_DELAY_MS = 200
@@ -348,7 +360,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             if (value != issueLimit) {
                 issueLimit = value
                 settings.setValue(ISSUE_LIMIT_KEY, value, DEFAULT_LIMIT)
-                refresh()
+                limitRefreshTimer.restart() // a run of clicks reloads once, after the last
             }
         }
         val limitPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
@@ -572,8 +584,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Shows the selected task in the details pane. Fields we already have render immediately; comments
      * (and a fuller description) are fetched lazily via [TaskRepository.findTask] off the EDT — so the
      * list load never pays for comments it may not need — and memoized in [detailCache] so revisiting a
-     * task is instant, including tasks that turn out to have no comments at all. A fetch only announces
-     * itself if it outlives [LOADING_LABEL_DELAY_MS].
+     * task is instant, including tasks that turn out to have no comments at all. Nothing is fetched until
+     * the selection has stayed put for [SELECTION_SETTLE_MS].
      */
     private fun updateDetailsFromSelection() {
         if (rebuilding) return // ignore selection churn while the tree is being rebuilt
@@ -583,6 +595,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         currentDetailKey = selectedKey
 
         cancelLoadingLabel() // whatever we show next supersedes any pending label
+        selectionSettleTimer?.stop()
         showingLoadingComments = false
         val requestId = ++detailRequestId
         if (node == null) {
@@ -593,9 +606,6 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val task = node.task
         val repository = node.repository
         val key = TaskKey(repository, task.id)
-
-        loadExtraProperties(task, repository, key, requestId)
-        loadPullRequests(task, repository, key, requestId)
 
         /*
          * Resolved already? Render straight away. Comments arriving with the list fetch count as resolved
@@ -609,26 +619,40 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 detailCache[key] = it
                 commentCache[key] = it.comments.toList()
             }
-        if (resolved != null) {
-            showDetails(resolved, repository, key, loadingComments = false)
-            return
+        showDetails(resolved ?: task, repository, key, loadingComments = false)
+        if (resolved == null) {
+            /*
+             * Stay quiet about the fetch for a beat: a server that answers within the grace period renders
+             * once, with no label flashing in between.
+             */
+            loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
+                if (requestId == detailRequestId) {
+                    showingLoadingComments = true
+                    showDetails(task, repository, key, loadingComments = true)
+                }
+            }.apply {
+                isRepeats = false
+                start()
+            }
         }
 
         /*
-         * Render the fields we already have straight away, but stay quiet about the fetch for a beat:
-         * a server that answers within the grace period renders once, with no label flashing in between.
+         * The reads wait for the selection to settle. Every one of them is a round trip, several for some
+         * trackers, and holding an arrow key down the list would otherwise send them for every row passed.
          */
-        showDetails(task, repository, key, loadingComments = false)
-        loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
-            if (requestId == detailRequestId) {
-                showingLoadingComments = true
-                showDetails(task, repository, key, loadingComments = true)
-            }
+        selectionSettleTimer = Timer(SELECTION_SETTLE_MS) {
+            if (requestId != detailRequestId) return@Timer
+            loadExtraProperties(task, repository, key, requestId)
+            loadPullRequests(task, repository, key, requestId)
+            if (resolved == null) loadDetails(task, repository, key, requestId)
         }.apply {
             isRepeats = false
             start()
         }
+    }
 
+    /** Reads the task in full, with its comments, and renders the result. */
+    private fun loadDetails(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
         AppExecutorUtil.getAppExecutorService().execute {
             /*
              * A null answer is not a failure: findTask is @Nullable, and a connector with no single-issue
@@ -792,6 +816,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      */
     override fun dispose() {
         disposed = true
+        selectionSettleTimer?.stop()
+        limitRefreshTimer.stop()
         KeyboardFocusManager.getCurrentKeyboardFocusManager()
             .removePropertyChangeListener(ACTIVE_WINDOW_PROPERTY, windowActivationListener)
         cancelLoadingLabel()
