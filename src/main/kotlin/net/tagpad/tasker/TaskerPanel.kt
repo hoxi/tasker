@@ -149,6 +149,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      */
     private val propertyCache = HashMap<DetailKey, TaskExtras>()
 
+    /** Linked pull and merge requests, keyed and cleared like [propertyCache], and cached only on success. EDT-only. */
+    private val pullRequestCache = HashMap<DetailKey, List<LinkedPullRequest>>()
+
     /**
      * The comments for each task in [detailCache], wherever they came from: the task itself, or the
      * adapter for a provider whose task never carries any — see [TaskEditor.comments]. A task counts as
@@ -329,6 +332,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // An explicit refresh means the user wants fresh comments — and a fresh assignee — too.
         detailCache.clear()
         propertyCache.clear()
+        pullRequestCache.clear()
         commentCache.clear()
         taskIcons.clear()
 
@@ -519,6 +523,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // Resolved already? Render straight away. Comments arriving with the list fetch (GitHub does this)
         // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
         loadExtraProperties(task, repository, key, requestId)
+        loadPullRequests(task, repository, key, requestId)
 
         /*
          * Not when the adapter fetches comments itself: Jira's list tasks carry comments too, but raw, and
@@ -594,6 +599,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             comments = commentCache[key],
             priority = propertyCache[key]?.priority,
             labels = propertyCache[key]?.labels.orEmpty(),
+            pullRequests = pullRequestCache[key].orEmpty(),
         )
     }
 
@@ -656,6 +662,34 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 propertyCache[key] = extras
                 if (requestId != detailRequestId) return@invokeLater // selection moved on
                 if (!extras.isEmpty()) {
+                    showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
+                }
+            }
+        }
+    }
+
+    /**
+     * Asks the adapter for linked pull and merge requests, once per task per refresh, alongside the other
+     * detail reads. A failure is logged rather than shown: for Jira this rides on an unofficial API, and
+     * a missing section is the honest outcome when it doesn't answer.
+     */
+    private fun loadPullRequests(task: Task, repository: TaskRepository, key: DetailKey, requestId: Int) {
+        if (pullRequestCache.containsKey(key)) return
+        val editor = TaskEditors.forRepository(repository) ?: return
+
+        AppExecutorUtil.getAppExecutorService().execute {
+            val pullRequests = try {
+                editor.pullRequests(task)
+            } catch (ce: ProcessCanceledException) {
+                return@execute
+            } catch (ex: Exception) {
+                LOG.info("Could not read pull requests for ${task.presentableId} on ${repository.presentableName}", ex)
+                return@execute // uncached, so the next visit tries again
+            }
+            ApplicationManager.getApplication().invokeLater {
+                pullRequestCache[key] = pullRequests
+                if (requestId != detailRequestId) return@invokeLater // selection moved on
+                if (pullRequests.isNotEmpty()) {
                     showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
                 }
             }

@@ -25,6 +25,25 @@ data class TaskPriority(val name: String, val icon: Icon? = null)
  */
 data class TaskLabel(val name: String, val background: Color? = null, val foreground: Color? = null)
 
+/** Where a linked pull or merge request lives, which decides its icon and its "!12" or "#12" reference style. */
+enum class CodeHost { GITHUB, GITLAB, BITBUCKET, OTHER }
+
+/** A pull or merge request's state, normalised across code hosts. */
+enum class PullRequestState { OPEN, DRAFT, MERGED, CLOSED }
+
+/**
+ * A pull or merge request linked to a task. [reference] is how its host writes it — `#45`, `!12`, or
+ * with the repository in front when that differs from the task's. [state] is null when the tracker
+ * doesn't say.
+ */
+data class LinkedPullRequest(
+    val host: CodeHost,
+    val reference: String,
+    val title: String,
+    val url: String,
+    val state: PullRequestState? = null,
+)
+
 /** What [TaskEditor.extras] read for one task: fields for the meta row, its priority, its labels. */
 data class TaskExtras(
     val properties: List<TaskProperty> = emptyList(),
@@ -101,6 +120,16 @@ interface TaskEditor {
      */
     @Throws(Exception::class)
     fun extras(task: Task): TaskExtras = TaskExtras()
+
+    /**
+     * Pull and merge requests linked to the task, in the order the tracker lists them. A request of its
+     * own, rather than part of [extras], because for most trackers it is a different endpoint — and for
+     * Jira an unofficial one, which mustn't take the documented fields down with it when it fails.
+     *
+     * Hits the network, so call it off the EDT.
+     */
+    @Throws(Exception::class)
+    fun pullRequests(task: Task): List<LinkedPullRequest> = emptyList()
 
     /**
      * The task's comments, for a provider whose [Task.getComments] doesn't carry them.

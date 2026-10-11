@@ -2,6 +2,8 @@ package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
 import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Comment
@@ -171,6 +173,17 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         add(descriptionBody, BorderLayout.CENTER)
     }
 
+    private val pullRequestsHeading = sectionLabel("PULL REQUESTS")
+    private val pullRequestsList = JPanel(VerticalLayout(JBUI.scale(4))).apply { isOpaque = false }
+
+    /** Linked pull and merge requests; hidden while there are none, rather than announcing an empty list. */
+    private val pullRequestsSection = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        isOpaque = false
+        isVisible = false
+        add(pullRequestsHeading, BorderLayout.NORTH)
+        add(pullRequestsList, BorderLayout.CENTER)
+    }
+
     private val commentsHeading = sectionLabel("COMMENTS")
 
     /**
@@ -189,10 +202,11 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             fill = GridBagConstraints.HORIZONTAL
         }
         add(descriptionSection, c)
-        add(commentsHeading, c.apply { gridy = 1; insets = JBUI.insetsTop(16) })
-        add(commentsList, c.apply { gridy = 2; insets = JBUI.insetsTop(6) })
+        add(pullRequestsSection, c.apply { gridy = 1; insets = JBUI.insetsTop(16) })
+        add(commentsHeading, c.apply { gridy = 2; insets = JBUI.insetsTop(16) })
+        add(commentsList, c.apply { gridy = 3; insets = JBUI.insetsTop(6) })
         // Soaks up leftover height so a short task's content stays at the top.
-        add(Box.createVerticalGlue(), c.apply { gridy = 3; weighty = 1.0; fill = GridBagConstraints.BOTH; insets = JBUI.emptyInsets() })
+        add(Box.createVerticalGlue(), c.apply { gridy = 4; weighty = 1.0; fill = GridBagConstraints.BOTH; insets = JBUI.emptyInsets() })
     }
 
     // ---- composer --------------------------------------------------------------------------------
@@ -304,6 +318,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         comments: List<Comment>? = null,
         priority: TaskPriority? = null,
         labels: List<TaskLabel> = emptyList(),
+        pullRequests: List<LinkedPullRequest> = emptyList(),
     ) {
         if (task == null) {
             issueUrl = null
@@ -341,6 +356,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         val shownComments = comments ?: task.comments.toList()
         commentsHeading.text = commentsHeadingText(shownComments, loadingComments)
+        renderPullRequests(pullRequests)
         if (editingComment == null) renderComments(shownComments, loadingComments)
         else pendingComments = shownComments to loadingComments
 
@@ -571,6 +587,53 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     // ---- comment rendering -----------------------------------------------------------------------
+
+    // ---- pull requests ---------------------------------------------------------------------------
+
+    private fun renderPullRequests(pullRequests: List<LinkedPullRequest>) {
+        pullRequestsList.removeAll()
+        pullRequests.forEach { pullRequestsList.add(pullRequestRow(it)) }
+        pullRequestsHeading.text =
+            if (pullRequests.isEmpty()) "PULL REQUESTS" else "PULL REQUESTS (${pullRequests.size})"
+        pullRequestsSection.isVisible = pullRequests.isNotEmpty()
+        pullRequestsSection.revalidate()
+        pullRequestsSection.repaint()
+    }
+
+    /**
+     * One linked request: host icon, then reference and title as a link to the request on its host, then
+     * its state. GitHub has an icon in the platform's set; GitLab and the rest get the generic merge one.
+     */
+    private fun pullRequestRow(pr: LinkedPullRequest): JComponent = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+        isOpaque = false
+        val icon = if (pr.host == CodeHost.GITHUB) AllIcons.Vcs.Vendors.Github else AllIcons.Vcs.Merge
+        add(JBLabel(icon), BorderLayout.WEST)
+
+        val text = listOf(pr.reference, pr.title).filter { it.isNotBlank() }.joinToString("  ")
+        val link = ActionLink(text.ifBlank { pr.url }) { BrowserUtil.browse(pr.url) }.apply { toolTipText = pr.url }
+        add(link, BorderLayout.CENTER)
+
+        val trailing = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { isOpaque = false }
+        pr.state?.let { state -> trailing.add(StatusBadge().apply { setPullRequestState(state) }) }
+        if (pr.host == CodeHost.GITLAB) gitLabToolWindowLink()?.let(trailing::add)
+        add(trailing, BorderLayout.EAST)
+    }
+
+    /**
+     * Opens the bundled GitLab plugin's Merge Requests tool window, through the action it registers for
+     * exactly that. Not the request itself: the plugin's way to open one by number is internal API.
+     * Null when the plugin isn't there, so the link only shows where it can work.
+     */
+    private fun gitLabToolWindowLink(): JComponent? {
+        val action = ActionManager.getInstance().getAction(GITLAB_MERGE_REQUESTS_ACTION) ?: return null
+        return ActionLink("Show in IDE") {
+            ActionManager.getInstance().tryToExecute(action, null, this, ActionPlaces.UNKNOWN, true)
+        }.apply {
+            font = JBFont.small()
+            toolTipText = "Open GitLab's Merge Requests tool window"
+            border = JBUI.Borders.emptyLeft(8)
+        }
+    }
 
     private fun commentsHeadingText(comments: List<Comment>, loadingComments: Boolean): String = when {
         loadingComments -> "COMMENTS"
@@ -1097,6 +1160,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** Added to [AVATAR_SIZE] for a reply's indent: the non-breaking space after the avatar, roughly. */
         const val REPLY_INDENT_GAP = 4
+
+        /** Registered by the bundled GitLab plugin; opens its Merge Requests tool window. */
+        const val GITLAB_MERGE_REQUESTS_ACTION = "GitLab.Merge.Request.Show.List"
 
         /** Replies deeper than this stop indenting further. */
         const val MAX_REPLY_DEPTH = 3

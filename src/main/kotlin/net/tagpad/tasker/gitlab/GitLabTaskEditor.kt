@@ -4,16 +4,21 @@ import com.google.gson.JsonObject
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
+import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.LinkedPullRequest
+import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
 import net.tagpad.tasker.TaskLabel
 import net.tagpad.tasker.addIfPresent
 import net.tagpad.tasker.baseUrlOrNull
 import net.tagpad.tasker.credentialsOrNull
+import net.tagpad.tasker.idOrEmpty
 import net.tagpad.tasker.mapArray
 import net.tagpad.tasker.objectOrNull
 import net.tagpad.tasker.readJsonObject
+import net.tagpad.tasker.readJsonObjects
 import net.tagpad.tasker.sendJson
 import net.tagpad.tasker.stringOrEmpty
 import java.net.URLEncoder
@@ -82,6 +87,39 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
             addIfPresent("Time spent", stats?.stringOrEmpty("human_total_time_spent"))
             addIfPresent("Estimate", stats?.stringOrEmpty("human_time_estimate"))
         })
+    }
+
+    /**
+     * Merge requests that will close the issue (`closed_by`) and those that merely mention it
+     * (`related_merge_requests`), the first group first. Either list failing on its own — an older
+     * self-managed instance, say — just leaves its merge requests out.
+     */
+    override fun pullRequests(task: Task): List<LinkedPullRequest> {
+        val endpoint = endpoint(task) ?: return emptyList()
+        // The issue's project as a web path, e.g. https://host/group/project, to tell local merge requests from others.
+        val issueProject = task.issueUrl?.substringBefore("/-/issues/")?.substringBefore("/issues/")
+
+        val found = LinkedHashMap<String, LinkedPullRequest>()
+        for (path in listOf("closed_by", "related_merge_requests")) {
+            val mergeRequests = runCatching { readJsonObjects("$endpoint/$path", headers()) }.getOrNull() ?: continue
+            for (mr in mergeRequests) {
+                val url = mr.stringOrEmpty("web_url").takeIf { it.isNotBlank() } ?: continue
+                if (url in found) continue
+                val references = mr.objectOrNull("references")
+                val local = issueProject != null && url.startsWith("$issueProject/")
+                val reference = (if (local) references?.stringOrEmpty("short") else references?.stringOrEmpty("full"))
+                    ?.takeIf { it.isNotBlank() } ?: "!${mr.idOrEmpty("iid")}"
+                val draft = listOf("draft", "work_in_progress")
+                    .any { mr.get(it)?.takeIf { e -> e.isJsonPrimitive }?.asBoolean == true }
+                val state = when (mr.stringOrEmpty("state")) {
+                    "merged" -> PullRequestState.MERGED
+                    "closed", "locked" -> PullRequestState.CLOSED
+                    else -> if (draft) PullRequestState.DRAFT else PullRequestState.OPEN
+                }
+                found[url] = LinkedPullRequest(CodeHost.GITLAB, reference, mr.stringOrEmpty("title"), url, state)
+            }
+        }
+        return found.values.toList()
     }
 
     private fun updateIssue(task: Task, field: String, value: String) {

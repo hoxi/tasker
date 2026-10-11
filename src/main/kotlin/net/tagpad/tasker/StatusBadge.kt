@@ -50,6 +50,19 @@ open class StatusBadge : JComponent() {
         chipForeground = foreground ?: background?.let(::readableOn) ?: GREY.second
     }
 
+    /** A pull request's state, coloured as code hosts colour it: open green, draft grey, merged purple, closed red. */
+    fun setPullRequestState(state: PullRequestState) {
+        text = state.name
+        val (bg, fg) = when (state) {
+            PullRequestState.OPEN -> GREEN
+            PullRequestState.DRAFT -> GREY
+            PullRequestState.MERGED -> PURPLE
+            PullRequestState.CLOSED -> RED
+        }
+        chipBackground = bg
+        chipForeground = fg
+    }
+
     override fun getPreferredSize(): Dimension {
         if (text.isEmpty()) return Dimension(0, 0)
         val fm = getFontMetrics(font)
@@ -107,6 +120,7 @@ open class StatusBadge : JComponent() {
         private val GREEN = chip(0xE3FCEF, 0x006644, 0x1B3A2B, 0x84D6A8)
         private val YELLOW = chip(0xFFF0B3, 0x574F16, 0x4A3F14, 0xF2D06B)
         private val PURPLE = chip(0xEAE6FF, 0x403294, 0x322A52, 0xB8ACF6)
+        private val RED = chip(0xFFEBE6, 0xBF2600, 0x4A2323, 0xF5A79A)
 
         private fun statusColors(status: String): Pair<Color, Color> = when (classify(status)) {
             StatusKind.TODO -> GREEN          // actionable

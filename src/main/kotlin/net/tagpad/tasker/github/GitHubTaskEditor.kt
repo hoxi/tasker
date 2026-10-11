@@ -7,9 +7,12 @@ import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.tasks.impl.BaseRepository
 import com.intellij.util.io.HttpRequests
+import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.CommentReaction
 import net.tagpad.tasker.EditableComment
 import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.LinkedPullRequest
+import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.ReactableComment
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
@@ -78,6 +81,46 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
             if (batch.size < COMMENTS_PER_PAGE) break
         }
         return comments
+    }
+
+    /**
+     * Pull requests that mention the issue, from its timeline's `cross-referenced` events — which is
+     * also where github.com's own "mentioned this" entries come from. A pull request linked only through
+     * the sidebar's Development box, without ever mentioning the issue, isn't in the REST timeline.
+     */
+    override fun pullRequests(task: Task): List<LinkedPullRequest> {
+        val endpoint = endpoint(task) ?: return emptyList()
+        val issueRepo = endpoint.substringAfter("/repos/").substringBefore("/issues/")
+
+        val found = LinkedHashMap<String, LinkedPullRequest>()
+        for (page in 1..MAX_TIMELINE_PAGES) {
+            val events = readJsonObjects("$endpoint/timeline?per_page=$COMMENTS_PER_PAGE&page=$page", headers())
+            for (event in events) {
+                if (event.stringOrEmpty("event") != "cross-referenced") continue
+                val source = event.objectOrNull("source")?.objectOrNull("issue") ?: continue
+                val pr = source.objectOrNull("pull_request") ?: continue
+                val url = source.stringOrEmpty("html_url").takeIf { it.isNotBlank() } ?: continue
+
+                val repo = source.objectOrNull("repository")?.stringOrEmpty("full_name").orEmpty()
+                val number = source.idOrEmpty("number")
+                val state = when {
+                    pr.stringOrEmpty("merged_at").isNotBlank() -> PullRequestState.MERGED
+                    source.stringOrEmpty("state") == "closed" -> PullRequestState.CLOSED
+                    source.get("draft")?.takeIf { it.isJsonPrimitive }?.asBoolean == true -> PullRequestState.DRAFT
+                    else -> PullRequestState.OPEN
+                }
+                found[url] = LinkedPullRequest(
+                    host = CodeHost.GITHUB,
+                    reference = if (repo.isBlank() || repo.equals(issueRepo, ignoreCase = true)) "#$number"
+                    else "$repo#$number",
+                    title = source.stringOrEmpty("title"),
+                    url = url,
+                    state = state,
+                )
+            }
+            if (events.size < COMMENTS_PER_PAGE) break
+        }
+        return found.values.toList()
     }
 
     override fun canEditComment(task: Task, comment: Comment): Boolean =
@@ -222,6 +265,9 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         /** A thousand comments; a thread past that is better read on github.com. */
         const val MAX_COMMENT_PAGES = 10
+
+        /** Timeline events, in pages of [COMMENTS_PER_PAGE]; cross-references past these are rare. */
+        const val MAX_TIMELINE_PAGES = 3
 
         /** GitHub's eight reactions, keyed as its API names them, in the order github.com shows them. */
         val REACTION_EMOJI: Map<String, String> = linkedMapOf(

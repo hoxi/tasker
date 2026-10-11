@@ -1,5 +1,6 @@
 package net.tagpad.tasker.jira
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.diagnostic.logger
@@ -9,8 +10,11 @@ import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
+import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.EditableComment
 import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.LinkedPullRequest
+import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.TaskDecoration
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskEditors
@@ -151,6 +155,63 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
             if (avatar != null) builder.append("<img src='").append(StringUtil.escapeXmlEntities(avatar)).append("'>")
             builder.append(html)
         }
+    }
+
+    /**
+     * Pull and merge requests from the issue's Development panel, whichever code host integration fills
+     * it — the GitLab for Jira app, GitHub for Jira, Bitbucket.
+     *
+     * The panel's data is only reachable through `/rest/dev-status`, which Atlassian doesn't document or
+     * support; the shapes read here are those community examples show. So everything is read leniently,
+     * and any failure is the panel's to swallow — it costs the section, never the rest of the pane.
+     *
+     * The summary comes first because the detail call needs an application type per code host, and the
+     * summary says which ones have anything linked.
+     */
+    override fun pullRequests(task: Task): List<LinkedPullRequest> {
+        val endpoint = issueEndpoint(task) ?: return emptyList()
+        val site = repository.baseUrlOrNull() ?: return emptyList()
+        // dev-status wants the numeric issue id, not the key.
+        val issueId = readJsonObject("$endpoint?fields=summary", headers()).idOrEmpty("id")
+            .takeIf { it.isNotBlank() } ?: return emptyList()
+
+        val summary = readJsonObject("$site/rest/dev-status/latest/issue/summary?issueId=$issueId", headers())
+        val byType = summary.objectOrNull("summary")?.objectOrNull("pullrequest")?.objectOrNull("byInstanceType")
+            ?: return emptyList()
+        val types = byType.entrySet()
+            .filter { (_, value) -> value.isJsonObject && (value.asJsonObject.get("count")?.asIntOrNull() ?: 0) > 0 }
+            .map { it.key }
+
+        val found = LinkedHashMap<String, LinkedPullRequest>()
+        for (type in types) {
+            val host = codeHost(type)
+            val appType = URLEncoder.encode(type, StandardCharsets.UTF_8)
+            val query = "issueId=$issueId&applicationType=$appType&dataType=pullrequest"
+            val detail = readJsonObject("$site/rest/dev-status/latest/issue/detail?$query", headers())
+            val entries = detail.get("detail")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
+            for (entry in entries) {
+                val requests = entry.takeIf { it.isJsonObject }?.asJsonObject?.get("pullRequests")
+                    ?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
+                for (element in requests) {
+                    val pr = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val url = pr.stringOrEmpty("url").takeIf { it.isNotBlank() } ?: continue
+                    found[url] = LinkedPullRequest(
+                        host = host,
+                        reference = reference(pr.idOrEmpty("id"), host),
+                        title = pr.stringOrEmpty("name"),
+                        url = url,
+                        state = when (pr.stringOrEmpty("status").uppercase()) {
+                            "OPEN" -> PullRequestState.OPEN
+                            "MERGED" -> PullRequestState.MERGED
+                            "DECLINED", "CLOSED" -> PullRequestState.CLOSED
+                            "DRAFT" -> PullRequestState.DRAFT
+                            else -> null
+                        },
+                    )
+                }
+            }
+        }
+        return found.values.toList()
     }
 
     /**
@@ -333,6 +394,31 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
          * A user's identity: `accountId` on Cloud, where it is all a user object is guaranteed to carry,
          * and `key` or `name` on Server and Data Center, which predate account ids.
          */
+        /**
+         * The code host behind a dev-status application type. "stash" is Bitbucket's old name, which the
+         * API kept; "githube" is GitHub Enterprise.
+         */
+        fun codeHost(applicationType: String): CodeHost {
+            val type = applicationType.lowercase()
+            return when {
+                "gitlab" in type -> CodeHost.GITLAB
+                "github" in type -> CodeHost.GITHUB
+                "bitbucket" in type || "stash" in type -> CodeHost.BITBUCKET
+                else -> CodeHost.OTHER
+            }
+        }
+
+        /** dev-status ids usually arrive as `!12` or `#12` already; a bare number gets its host's prefix. */
+        fun reference(id: String, host: CodeHost): String = when {
+            id.isBlank() -> ""
+            id.first() in "!#" -> id
+            host == CodeHost.GITLAB -> "!$id"
+            else -> "#$id"
+        }
+
+        fun JsonElement.asIntOrNull(): Int? =
+            takeIf { it.isJsonPrimitive }?.let { runCatching { it.asInt }.getOrNull() }
+
         fun userId(user: JsonObject): String? =
             listOf("accountId", "key", "name")
                 .firstNotNullOfOrNull { user.stringOrEmpty(it).takeIf(String::isNotBlank) }
