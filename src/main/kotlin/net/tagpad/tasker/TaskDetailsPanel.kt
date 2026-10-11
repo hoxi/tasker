@@ -40,6 +40,7 @@ import java.awt.event.ActionEvent
 import java.awt.event.ActionListener
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
+import java.awt.event.FocusEvent
 import java.awt.event.KeyEvent
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
@@ -1122,6 +1123,17 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             caret.isVisible = editing && isFocusOwner
             revalidate()
             repaint()
+        }
+
+        /**
+         * Read mode keeps its caret hidden even when it gains the focus — which it does on purpose, as the
+         * place a cancelled edit parks the focus. The platform's caret shows itself on focus whether or not
+         * the text is editable, so it is put away again once every listener, the caret's own included, has
+         * had the event.
+         */
+        override fun processFocusEvent(e: FocusEvent) {
+            super.processFocusEvent(e)
+            if (e.id == FocusEvent.FOCUS_GAINED && !isEditable) caret.isVisible = false
         }
 
         override fun getPreferredSize(): Dimension {
