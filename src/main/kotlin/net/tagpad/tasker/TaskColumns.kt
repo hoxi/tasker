@@ -101,3 +101,16 @@ private class CreatedColumn : ColumnInfo<DefaultMutableTreeNode, String>("Create
 /** Column order: ID (tree), Status, Summary, Updated, Created. */
 internal fun taskerColumns(): Array<ColumnInfo<DefaultMutableTreeNode, *>> =
     arrayOf(IdColumn(), StatusColumn(), SummaryColumn(), UpdatedColumn(), CreatedColumn())
+
+/**
+ * One task on one server. Ids are only unique within a server, so the server is part of the key — the
+ * configured server itself rather than its url, which two servers can share: every GitHub repository is
+ * configured against the same API host. Keys are dropped with every refresh, the only time the server
+ * objects are looked up afresh, so identity is stable for as long as a key lives.
+ */
+internal class TaskKey(val repository: TaskRepository, val taskId: String) {
+    override fun equals(other: Any?): Boolean =
+        other is TaskKey && other.repository === repository && other.taskId == taskId
+
+    override fun hashCode(): Int = 31 * System.identityHashCode(repository) + taskId.hashCode()
+}

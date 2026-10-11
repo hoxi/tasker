@@ -273,8 +273,12 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     /** Target of [browserLink]; kept out of the listener so the link can be reused across selections. */
     private var issueUrl: String? = null
 
-    /** Guards in-progress edits against the [show] that follows every write and every refresh. */
-    private var currentTaskId: String? = null
+    /**
+     * Guards in-progress edits against the [show] that follows every write and every refresh: a
+     * [TaskKey], so the same id on another server counts as another task, or the bare id when [show]
+     * isn't told the server.
+     */
+    private var currentTask: Any? = null
     private var editingSummary = false
     private var editingDescription = false
 
@@ -328,7 +332,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     ) {
         if (task == null) {
             issueUrl = null
-            currentTaskId = null
+            currentTask = null
             cardLayout.show(cards, CARD_EMPTY)
             return
         }
@@ -337,8 +341,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
          * Moving to a different task abandons anything half-typed; staying on the same one must not,
          * because a save triggers a re-read that comes straight back through here.
          */
-        if (task.id != currentTaskId) {
-            currentTaskId = task.id
+        val shown: Any = repository?.let { TaskKey(it, task.id) } ?: task.id
+        if (shown != currentTask) {
+            currentTask = shown
             exitSummaryEdit()
             exitDescriptionEdit()
             exitCommentEdit()
@@ -468,9 +473,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
          * then would hold the old task's description over the new task, and saving it would overwrite
          * the new task's — so an answer for a task no longer shown is dropped.
          */
-        val requestedFor = currentTaskId
+        val requestedFor = currentTask
         edits.loadDescription { current ->
-            if (currentTaskId != requestedFor || editingDescription) return@loadDescription
+            if (currentTask != requestedFor || editingDescription) return@loadDescription
             editingDescription = true
             swap(descriptionBody, descriptionEditor)
             descriptionEditor.start(current)
