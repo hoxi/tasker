@@ -25,6 +25,7 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.util.Condition
+import com.intellij.openapi.wm.WindowManager
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Comment
 import com.intellij.tasks.CustomTaskState
@@ -229,14 +230,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Refreshes when the configured servers have changed since the last load.
      *
      * Task Management announces no such change — its settings page simply replaces the server list — so
-     * this checks whenever the IDE window this panel lives in becomes active again, which is exactly
-     * what closing the Settings dialog does. Every apply on the servers page installs new server objects,
-     * so it is compared by identity: an apply always reloads, and anything else costs one list compare.
+     * this checks whenever one of this project's windows becomes active again, which is exactly what
+     * closing the Settings dialog does. Both count: the project frame, which the dialog returns to, and
+     * the window this panel lives in, which differs when the tool window floats. Every apply on the
+     * servers page installs new server objects, so it is compared by identity: an apply always reloads,
+     * and anything else costs one list compare.
      */
     private val windowActivationListener = PropertyChangeListener { event ->
-        if (disposed || event.newValue == null || event.newValue !== SwingUtilities.getWindowAncestor(this)) {
-            return@PropertyChangeListener
-        }
+        val activated = event.newValue ?: return@PropertyChangeListener
+        val ours = activated === SwingUtilities.getWindowAncestor(this) ||
+            activated === WindowManager.getInstance().getFrame(project)
+        if (disposed || !ours) return@PropertyChangeListener
         val configured = TaskManager.getManager(project).allRepositories
         val shown = cache.map { it.repository }
         if (configured.size != shown.size || configured.indices.any { configured[it] !== shown[it] }) refresh()
