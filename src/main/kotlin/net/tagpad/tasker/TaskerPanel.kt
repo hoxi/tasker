@@ -1,6 +1,7 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionGroupWrapper
@@ -129,11 +130,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private val detailsPanel = TaskDetailsPanel(EditHandler())
 
     private var cache: List<ServerGroup> = emptyList()
-    private var groupByServer: Boolean = true
-    private var includeClosed: Boolean = false
-    private var issueLimit: Int = DEFAULT_LIMIT
-    private var sortColumn: Int? = null
-    private var sortAscending: Boolean = true
+
+    /** Where the view settings below are remembered between sessions, per project. */
+    private val settings = PropertiesComponent.getInstance(project)
+
+    private var groupByServer: Boolean = settings.getBoolean(GROUP_BY_SERVER_KEY, true)
+    private var includeClosed: Boolean = settings.getBoolean(INCLUDE_CLOSED_KEY, false)
+    private var issueLimit: Int = settings.getInt(ISSUE_LIMIT_KEY, DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
+    private var sortColumn: Int? = settings.getInt(SORT_COLUMN_KEY, -1).takeIf { it in columns.indices }
+    private var sortAscending: Boolean = settings.getBoolean(SORT_ASCENDING_KEY, true)
 
     /** Incremented on every (re)load so results from superseded loads can be discarded. */
     private var loadGeneration: Int = 0
@@ -202,6 +207,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         /** The Task Management plugin's own Tools menu group, reused as a toolbar dropdown. */
         const val TASKS_AND_CONTEXTS_GROUP = "tasks.and.contexts"
         const val DEFAULT_LIMIT = 30
+        const val MAX_LIMIT = 500
+
+        const val GROUP_BY_SERVER_KEY = "tasker.groupByServer"
+        const val INCLUDE_CLOSED_KEY = "tasker.includeClosed"
+        const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
+        const val SORT_COLUMN_KEY = "tasker.sortColumn"
+        const val SORT_ASCENDING_KEY = "tasker.sortAscending"
 
         /** Grace period before admitting to a comment fetch; servers that answer inside it never flash the label. */
         const val LOADING_LABEL_DELAY_MS = 200
@@ -278,6 +290,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             override fun isSelected(e: AnActionEvent) = groupByServer
             override fun setSelected(e: AnActionEvent, state: Boolean) {
                 groupByServer = state
+                settings.setValue(GROUP_BY_SERVER_KEY, state, true)
                 rebuild()
             }
         })
@@ -286,6 +299,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             override fun isSelected(e: AnActionEvent) = includeClosed
             override fun setSelected(e: AnActionEvent, state: Boolean) {
                 includeClosed = state
+                settings.setValue(INCLUDE_CLOSED_KEY, state, false)
                 refresh() // closed issues aren't in the cache — refetch from the servers
             }
         })
@@ -302,11 +316,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         actionToolbar.targetComponent = treeTable
 
         // Task limit spinner: how many issues to request per server (lower = faster loads).
-        val spinner = JBIntSpinner(issueLimit, 1, 500)
+        val spinner = JBIntSpinner(issueLimit, 1, MAX_LIMIT)
         spinner.addChangeListener {
             val value = spinner.number
             if (value != issueLimit) {
                 issueLimit = value
+                settings.setValue(ISSUE_LIMIT_KEY, value, DEFAULT_LIMIT)
                 refresh()
             }
         }
@@ -496,6 +511,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             sortColumn = modelColumn
             sortAscending = true
         }
+        settings.setValue(SORT_COLUMN_KEY, modelColumn, -1)
+        settings.setValue(SORT_ASCENDING_KEY, sortAscending, true)
         rebuild()
         header.repaint()
     }
