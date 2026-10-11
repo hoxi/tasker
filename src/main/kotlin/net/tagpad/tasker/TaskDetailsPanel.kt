@@ -458,8 +458,14 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         /*
          * The text to edit may have to be fetched: GitLab's Task carries no description even when the
          * issue has one. The callback only fires on success, so a failed read leaves read mode intact.
+         *
+         * The read takes a round trip, and the selection may move on in the meantime. An editor opened
+         * then would hold the old task's description over the new task, and saving it would overwrite
+         * the new task's — so an answer for a task no longer shown is dropped.
          */
+        val requestedFor = currentTaskId
         edits.loadDescription { current ->
+            if (currentTaskId != requestedFor || editingDescription) return@loadDescription
             editingDescription = true
             swap(descriptionBody, descriptionEditor)
             descriptionEditor.start(current)
