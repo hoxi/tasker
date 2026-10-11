@@ -56,6 +56,7 @@ import java.awt.KeyboardFocusManager
 import java.awt.Rectangle
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.beans.PropertyChangeListener
 import javax.swing.CellRendererPane
 import javax.swing.Icon
 import javax.swing.JComponent
@@ -210,6 +211,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val DEFAULT_LIMIT = 30
         const val MAX_LIMIT = 500
 
+        const val ACTIVE_WINDOW_PROPERTY = "activeWindow"
+
         const val GROUP_BY_SERVER_KEY = "tasker.groupByServer"
         const val INCLUDE_CLOSED_KEY = "tasker.includeClosed"
         const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
@@ -218,6 +221,23 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         /** Grace period before admitting to a comment fetch; servers that answer inside it never flash the label. */
         const val LOADING_LABEL_DELAY_MS = 200
+    }
+
+    /**
+     * Refreshes when the configured servers have changed since the last load.
+     *
+     * Task Management announces no such change — its settings page simply replaces the server list — so
+     * this checks whenever the IDE window this panel lives in becomes active again, which is exactly
+     * what closing the Settings dialog does. Every apply on the servers page installs new server objects,
+     * so it is compared by identity: an apply always reloads, and anything else costs one list compare.
+     */
+    private val windowActivationListener = PropertyChangeListener { event ->
+        if (disposed || event.newValue == null || event.newValue !== SwingUtilities.getWindowAncestor(this)) {
+            return@PropertyChangeListener
+        }
+        val configured = TaskManager.getManager(project).allRepositories
+        val shown = cache.map { it.repository }
+        if (configured.size != shown.size || configured.indices.any { configured[it] !== shown[it] }) refresh()
     }
 
     init {
@@ -231,6 +251,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             override fun taskAdded(task: LocalTask) = Unit
             override fun taskRemoved(task: LocalTask) = Unit
         }, this)
+
+        KeyboardFocusManager.getCurrentKeyboardFocusManager()
+            .addPropertyChangeListener(ACTIVE_WINDOW_PROPERTY, windowActivationListener)
 
         /*
          * The comment panes bake the theme's colours into their stylesheet, so a theme switch redraws the
@@ -759,9 +782,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
     }
 
-    /** The task listener unregisters itself against this; the timer would otherwise outlive the panel. */
+    /**
+     * The task and theme listeners unregister themselves against this; the window listener and the
+     * timer would otherwise outlive the panel.
+     */
     override fun dispose() {
         disposed = true
+        KeyboardFocusManager.getCurrentKeyboardFocusManager()
+            .removePropertyChangeListener(ACTIVE_WINDOW_PROPERTY, windowActivationListener)
         cancelLoadingLabel()
     }
 
