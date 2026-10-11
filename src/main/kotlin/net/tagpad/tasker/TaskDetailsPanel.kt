@@ -752,8 +752,15 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      * panes entirely.
      */
     private fun bodyHtml(comment: Comment): String {
+        /*
+         * A tracker without an adapter hands us its connector's comment text as is, which for several —
+         * Trello's, for one — is plain text with line breaks. The platform's own Comment.appendTo turns
+         * those into <br>, so do the same for them; adapters' comments are HTML already, where a literal
+         * line break means nothing and converting it would add blank lines.
+         */
+        val text = comment.text.orEmpty().let { if (shownEditor == null) it.replace("\n", "<br>") else it }
         val sb = StringBuilder("<div class='comment'>")
-        sb.append("<div class='text'>").append(comment.text.orEmpty()).append("</div>")
+        sb.append("<div class='text'>").append(text).append("</div>")
         val reactions = (comment as? ReactableComment)?.reactions.orEmpty().filter { it.count > 0 }
         if (reactions.isNotEmpty()) {
             sb.append("<div class='reactions'>")

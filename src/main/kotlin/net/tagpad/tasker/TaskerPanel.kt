@@ -554,8 +554,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
 
         AppExecutorUtil.getAppExecutorService().execute {
+            /*
+             * A null answer is not a failure: findTask is @Nullable, and a connector with no single-issue
+             * lookup — Generic, unless one is configured — has nothing fuller than the listed task. That
+             * task is then the resolved one, and is cached like any other. Only a throw is retried.
+             */
             val full = try {
-                repository.findTask(task.id)
+                repository.findTask(task.id) ?: task
             } catch (ce: ProcessCanceledException) {
                 return@execute
             } catch (ex: Exception) {
