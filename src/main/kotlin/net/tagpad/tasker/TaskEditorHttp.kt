@@ -45,6 +45,10 @@ private fun RequestBuilder.withHeaders(headers: Map<String, String>): RequestBui
 internal fun JsonObject.stringOrEmpty(field: String): String =
     get(field)?.takeIf { !it.isJsonNull }?.asString.orEmpty()
 
+/** An id as text, whether the tracker sends it as a number or a string; empty for anything else. */
+internal fun JsonObject.idOrEmpty(field: String): String =
+    get(field)?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+
 /** A nested object, or null when the field is absent, null, or not an object. */
 internal fun JsonObject.objectOrNull(field: String): JsonObject? =
     get(field)?.takeIf { it.isJsonObject }?.asJsonObject

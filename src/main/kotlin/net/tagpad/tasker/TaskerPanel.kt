@@ -518,8 +518,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // count as resolved too, and are folded into the cache so the tree node itself can be dropped.
         loadExtraProperties(task, repository, key, requestId)
 
+        /*
+         * Not when the adapter fetches comments itself: Jira's list tasks carry comments too, but raw, and
+         * taking those as final would mean the adapter's own were never asked for.
+         */
+        val ownComments = TaskEditors.forRepository(repository)?.suppliesComments != true
         val resolved = detailCache[key]?.takeIf { key in commentCache }
-            ?: task.takeIf { it.comments.isNotEmpty() }?.also {
+            ?: task.takeIf { ownComments && it.comments.isNotEmpty() }?.also {
                 detailCache[key] = it
                 commentCache[key] = it.comments.toList()
             }
