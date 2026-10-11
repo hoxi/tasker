@@ -5,8 +5,8 @@ import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.tasks.TaskState
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
+import com.intellij.util.text.DateFormatUtil
 import com.intellij.util.ui.ColumnInfo
-import java.text.SimpleDateFormat
 import java.util.Date
 import javax.swing.tree.DefaultMutableTreeNode
 
@@ -45,9 +45,8 @@ private fun trackerStateName(task: Task): String? =
         ?.value?.value
         ?.takeIf { it.isNotBlank() }
 
-private val DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd HH:mm")
-
-internal fun formatDate(date: Date?): String = date?.let { DATE_FORMAT.format(it) } ?: ""
+/** A date and time in the IDE's own format, as set under Settings | Appearance & Behavior | System Settings. */
+internal fun formatDate(date: Date?): String = date?.let(DateFormatUtil::formatDateTime).orEmpty()
 
 /** Compare two nodes by a task date, nulls (and non-task nodes) last. */
 private fun byDate(extract: (Task) -> Date?): Comparator<DefaultMutableTreeNode> =
