@@ -13,6 +13,7 @@ import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
@@ -51,6 +52,7 @@ import java.awt.Rectangle
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.CellRendererPane
+import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -74,6 +76,20 @@ private class PinnedFirstColumnModel : DefaultTableColumnModel() {
 }
 
 /**
+ * Paints [delegate], or [fallback] while [delegate] reports no size.
+ * Jira's connector loads issue-type icons with `ImageIcon(url)`, and Jira Cloud serves them as SVG,
+ * which ImageIcon cannot decode — the result is a -1x-1 icon that the platform's selection painting
+ * reports as an error. Hiding the delegate behind this wrapper keeps the platform from inspecting it.
+ */
+private class FallbackIcon(private val delegate: Icon, private val fallback: Icon) : Icon {
+    private fun current(): Icon = if (delegate.iconWidth > 0 && delegate.iconHeight > 0) delegate else fallback
+
+    override fun paintIcon(c: Component?, g: Graphics?, x: Int, y: Int) = current().paintIcon(c, g, x, y)
+    override fun getIconWidth(): Int = current().iconWidth
+    override fun getIconHeight(): Int = current().iconHeight
+}
+
+/**
  * Tool window content: a multi-column [TreeTable] of tasks (ID / Status / Summary / Updated / Created)
  * with a details pane on the right. Tasks can be grouped per server or shown as one merged list;
  * clicking a column header sorts — within each server group when grouped, globally when flat.
@@ -85,6 +101,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val tasks: List<Task>,
         val error: String?,
         val loading: Boolean = false,
+        /** Keyed by task id; arrives after the tasks themselves — see [decorate]. */
+        val decorations: Map<String, TaskDecoration> = emptyMap(),
     )
 
     /** Cache key for a resolved task: ids are only unique within a server, so the url is part of the key. */
@@ -128,6 +146,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      */
     private val propertyCache = HashMap<DetailKey, List<TaskProperty>>()
 
+    /**
+     * One [FallbackIcon] per task icon, so repaints reuse the same instance instead of filling the
+     * platform's icon caches with a new wrapper on every paint. Cleared by [refresh]. EDT-only.
+     */
+    private val taskIcons = HashMap<Icon, Icon>()
+
     /** Pending deferred "Loading comments…" label, if a fetch is in flight. EDT-only. */
     private var loadingLabelTimer: Timer? = null
 
@@ -143,6 +167,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var rebuilding: Boolean = false
 
     private companion object {
+        val LOG = logger<TaskerPanel>()
+
         const val ID_COLUMN = 0
         const val STATUS_COLUMN = 1
 
@@ -293,6 +319,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         // An explicit refresh means the user wants fresh comments — and a fresh assignee — too.
         detailCache.clear()
         propertyCache.clear()
+        taskIcons.clear()
 
         // Seed the cache so configured servers show up immediately as "loading".
         cache = repositories.map { repo ->
@@ -316,9 +343,44 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     cache = cache.map { if (it.repository === repo) result else it }
                     rebuild()
                 }
+                if (result.tasks.isNotEmpty()) decorate(repo, result.tasks, generation)
             }
         }
     }
+
+    /**
+     * Second pass over a server's list, for what [Task] reports wrong or not at all — Jira's real status
+     * names and issue-type icons. Runs after the plain list is already on screen, so a slow or failing
+     * adapter costs nothing but the extras. Called on the loading thread.
+     */
+    private fun decorate(repository: TaskRepository, tasks: List<Task>, generation: Int) {
+        val editor = TaskEditors.forRepository(repository) ?: return
+        val decorations = try {
+            editor.decorate(tasks)
+        } catch (ce: ProcessCanceledException) {
+            return
+        } catch (ex: Exception) {
+            LOG.warn("Could not decorate tasks from ${repository.presentableName}", ex)
+            return
+        }
+        if (decorations.isEmpty()) return
+
+        ApplicationManager.getApplication().invokeLater {
+            if (generation != loadGeneration) return@invokeLater
+            cache = cache.map { group ->
+                if (group.repository !== repository) group
+                else ServerGroup(
+                    group.repository, group.tasks, group.error, group.loading, group.decorations + decorations,
+                )
+            }
+            // The pane already shows this task without them; let the reconcile in rebuild() redraw it.
+            currentDetailTaskId = null
+            rebuild()
+        }
+    }
+
+    private fun decorationFor(repository: TaskRepository, taskId: String): TaskDecoration? =
+        cache.firstOrNull { it.repository === repository }?.decorations?.get(taskId)
 
     /** Rebuild the tree from [cache] using the current grouping + sort. No refetch. */
     private fun rebuild() {
@@ -341,13 +403,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     val serverNode =
                         DefaultMutableTreeNode(ServerNode(serverGroup.repository, serverGroup.error, serverGroup.loading))
                     serverGroup.tasks
-                        .map { DefaultMutableTreeNode(TaskNode(it, serverGroup.repository)) }
+                        .map { TaskNode(it, serverGroup.repository, serverGroup.decorations[it.id]) }
+                        .map { DefaultMutableTreeNode(it) }
                         .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
                         .forEach { serverNode.add(it) }
                     root.add(serverNode)
                 }
             } else {
-                val taskNodes = cache.flatMap { group -> group.tasks.map { TaskNode(it, group.repository) } }
+                val taskNodes = cache
+                    .flatMap { group -> group.tasks.map { TaskNode(it, group.repository, group.decorations[it.id]) } }
                     .map { DefaultMutableTreeNode(it) }
                     .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
                 taskNodes.forEach { root.add(it) }
@@ -447,17 +511,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         val resolved = detailCache[key] ?: task.takeIf { it.comments.isNotEmpty() }?.also { detailCache[key] = it }
         if (resolved != null) {
-            detailsPanel.show(resolved, repository, loadingComments = false, extra = extraFor(task, key))
+            showDetails(resolved, repository, key, loadingComments = false)
             return
         }
 
         // Render the fields we already have straight away, but stay quiet about the fetch for a beat:
         // a server that answers within the grace period renders once, with no label flashing in between.
-        detailsPanel.show(task, repository, loadingComments = false, extra = extraFor(task, key))
+        showDetails(task, repository, key, loadingComments = false)
         loadingLabelTimer = Timer(LOADING_LABEL_DELAY_MS) {
             if (requestId == detailRequestId) {
                 showingLoadingComments = true
-                detailsPanel.show(task, repository, loadingComments = true, extra = extraFor(task, key))
+                showDetails(task, repository, key, loadingComments = true)
             }
         }.apply {
             isRepeats = false
@@ -479,7 +543,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (requestId != detailRequestId) return@invokeLater // selection moved on; its own timer now owns the pane
                 cancelLoadingLabel()
                 showingLoadingComments = false
-                detailsPanel.show(full ?: task, repository, loadingComments = false, extra = extraFor(task, key))
+                showDetails(full ?: task, repository, key, loadingComments = false)
             }
         }
     }
@@ -491,8 +555,19 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Local first because it is always available — the adapter's answer arrives a request later, and
      * appending it keeps the rows already on screen from reshuffling when it does.
      */
-    private fun extraFor(task: Task, key: DetailKey): List<TaskProperty> =
-        localProperties(task) + propertyCache[key].orEmpty()
+    private fun extraFor(task: Task, repository: TaskRepository, key: DetailKey): List<TaskProperty> =
+        localProperties(task) + decorationFor(repository, task.id)?.properties.orEmpty() + propertyCache[key].orEmpty()
+
+    /** Renders [task] in the pane with everything resolved for it so far. */
+    private fun showDetails(task: Task, repository: TaskRepository, key: DetailKey, loadingComments: Boolean) {
+        detailsPanel.show(
+            task,
+            repository,
+            loadingComments = loadingComments,
+            extra = extraFor(task, repository, key),
+            status = decorationFor(repository, task.id)?.status,
+        )
+    }
 
     /**
      * What the IDE itself knows, from the [LocalTask] behind this issue — which exists only once the
@@ -539,12 +614,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 propertyCache[key] = properties
                 if (requestId != detailRequestId) return@invokeLater // selection moved on
                 if (properties.isNotEmpty()) {
-                    detailsPanel.show(
-                        detailCache[key] ?: task,
-                        repository,
-                        loadingComments = showingLoadingComments,
-                        extra = extraFor(task, key),
-                    )
+                    showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
                 }
             }
         }
@@ -615,7 +685,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     states.isEmpty() -> listOf(TaskMenuItem.Message("No states available for this task"))
                     else -> states.map(TaskMenuItem::State)
                 }
-                showTaskContextMenu(listOf(switchItem) + stateItems, statusText(task), at, { switchToTask(task) }) { state ->
+                showTaskContextMenu(listOf(switchItem) + stateItems, statusText(task, node.decoration), at, { switchToTask(task) }) { state ->
                     applyWrite(repository, task, "Updating status…") { repository.setTaskState(task, state) }
                 }
             }
@@ -702,6 +772,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         ProgressManager.getInstance().run(object : ProgressTask.Backgroundable(project, progressTitle, false) {
             private var failure: Exception? = null
             private var refreshed: Task? = null
+            private var decorations: Map<String, TaskDecoration> = emptyMap()
 
             override fun run(indicator: ProgressIndicator) {
                 try {
@@ -717,16 +788,33 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 } catch (ex: Exception) {
                     null // the write landed; only the re-read failed
                 }
+                // A status change is exactly what a stale decoration would get wrong, so re-read it too.
+                decorations = refreshed?.let { fresh ->
+                    try {
+                        TaskEditors.forRepository(repository)?.decorate(listOf(fresh))
+                    } catch (ex: Exception) {
+                        null
+                    }
+                }.orEmpty()
             }
 
             override fun onSuccess() {
                 val error = failure
-                if (error != null) notifyFailure(progressTitle, error) else applyEdited(repository, task.id, refreshed)
+                if (error != null) {
+                    notifyFailure(progressTitle, error)
+                } else {
+                    applyEdited(repository, task.id, refreshed, decorations)
+                }
             }
         })
     }
 
-    private fun applyEdited(repository: TaskRepository, taskId: String, refreshed: Task?) {
+    private fun applyEdited(
+        repository: TaskRepository,
+        taskId: String,
+        refreshed: Task?,
+        decorations: Map<String, TaskDecoration>,
+    ) {
         val key = DetailKey(repository.url, taskId)
         if (refreshed == null) {
             detailCache.remove(key)
@@ -743,6 +831,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     group.tasks.map { if (it.id == taskId) refreshed else it },
                     group.error,
                     group.loading,
+                    group.decorations + decorations,
                 )
             }
         }
@@ -795,7 +884,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                         active -> AllIcons.Actions.Forward
                         // When flat (ungrouped), prepend the server icon so the task's origin is visible;
                         // when grouped, the server icon already sits on the parent header row.
-                        groupByServer -> task.icon
+                        groupByServer -> obj.decoration?.icon
+                            ?: taskIcons.getOrPut(task.icon) { FallbackIcon(task.icon, obj.repository.icon) }
                         else -> obj.repository.icon
                     }
                     append(

@@ -286,13 +286,15 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     /**
      * [extra] are fields the caller resolved that the task itself can't carry — see
      * [TaskEditor.extraProperties]. They arrive late for some providers, which simply means another
-     * [show] for the same task once they land.
+     * [show] for the same task once they land. [status] overrides the task's own, for trackers whose
+     * [Task.getState] loses the name — see [TaskDecoration].
      */
     fun show(
         task: Task?,
         repository: TaskRepository? = null,
         loadingComments: Boolean = false,
         extra: List<TaskProperty> = emptyList(),
+        status: String? = null,
     ) {
         if (task == null) {
             issueUrl = null
@@ -316,7 +318,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         issueUrl = task.issueUrl?.takeIf { it.isNotBlank() }
         browserLink.isVisible = issueUrl != null
         if (!editingSummary) summaryText.text = task.summary
-        statusBadge.setStatus(statusText(task))
+        statusBadge.setStatus(status ?: statusText(task))
         createdField.setValue(formatDate(task.created))
         updatedField.setValue(formatDate(task.updated))
         renderMetaFields(task, extra)

@@ -12,9 +12,13 @@ import javax.swing.tree.DefaultMutableTreeNode
 
 /** User objects carried by the tree nodes. */
 internal class ServerNode(val repository: TaskRepository, val error: String?, val loading: Boolean = false)
-internal class TaskNode(val task: Task, val repository: TaskRepository)
+internal class TaskNode(val task: Task, val repository: TaskRepository, val decoration: TaskDecoration? = null)
 
 internal fun DefaultMutableTreeNode.task(): Task? = (userObject as? TaskNode)?.task
+
+/** The row's status text, preferring what the provider adapter resolved over what [Task] reports. */
+internal fun DefaultMutableTreeNode.statusText(): String =
+    (userObject as? TaskNode)?.let { statusText(it.task, it.decoration) } ?: ""
 
 /**
  * The state as the tracker itself names it.
@@ -26,7 +30,8 @@ internal fun DefaultMutableTreeNode.task(): Task? = (userObject as? TaskNode)?.t
  *
  * So prefer the tracker's own state property when it exposes one; the enum is only a fallback.
  */
-internal fun statusText(task: Task): String {
+internal fun statusText(task: Task, decoration: TaskDecoration? = null): String {
+    decoration?.status?.let { return it }
     trackerStateName(task)?.let { return it }
     val state = task.state
     if (state != null && state != TaskState.OTHER) return state.presentableName
@@ -72,8 +77,9 @@ private class IdColumn : ColumnInfo<DefaultMutableTreeNode, Any>("ID") {
 private class StatusColumn : ColumnInfo<DefaultMutableTreeNode, String>("Status") {
     // Note: the badge renderer is installed on the TableColumn in TaskerPanel — a plain TreeTable
     // (unlike TableView) does not consult ColumnInfo.getRenderer.
-    override fun valueOf(item: DefaultMutableTreeNode): String = item.task()?.let(::statusText) ?: ""
-    override fun getComparator(): Comparator<DefaultMutableTreeNode> = byString { statusText(it) }
+    override fun valueOf(item: DefaultMutableTreeNode): String = item.statusText()
+    override fun getComparator(): Comparator<DefaultMutableTreeNode> =
+        Comparator { a, b -> StringUtil.naturalCompare(a.statusText(), b.statusText()) }
 }
 
 private class SummaryColumn : ColumnInfo<DefaultMutableTreeNode, String>("Summary") {
