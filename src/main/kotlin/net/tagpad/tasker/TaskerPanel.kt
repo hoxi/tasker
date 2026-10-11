@@ -112,19 +112,6 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val decorations: Map<String, TaskDecoration> = emptyMap(),
     )
 
-    /**
-     * Cache key for a resolved task. Ids are only unique within a server, so the server is part of the
-     * key — the configured server itself rather than its url, which two servers can share: every GitHub
-     * repository is configured against the same API host. The caches are cleared with every refresh, the
-     * only time the server objects are looked up afresh, so identity is stable for as long as a key lives.
-     */
-    private class DetailKey(val repository: TaskRepository, val taskId: String) {
-        override fun equals(other: Any?): Boolean =
-            other is DetailKey && other.repository === repository && other.taskId == taskId
-
-        override fun hashCode(): Int = 31 * System.identityHashCode(repository) + taskId.hashCode()
-    }
-
     private val columns: Array<ColumnInfo<DefaultMutableTreeNode, *>> = taskerColumns()
     private val root = DefaultMutableTreeNode()
     private val treeModel = ListTreeTableModelOnColumns(root, columns)
@@ -146,8 +133,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var loadGeneration: Int = 0
     /** Incremented on every selection so stale lazy detail fetches can be discarded. */
     private var detailRequestId: Int = 0
-    /** Task currently shown in the details pane; avoids redundant reloads when selection is restored. */
-    private var currentDetailTaskId: String? = null
+    /**
+     * Task currently shown in the details pane; avoids redundant reloads when selection is restored. A
+     * [TaskKey] rather than the id alone, so the same id on two servers counts as two tasks.
+     */
+    private var currentDetailKey: TaskKey? = null
 
     /**
      * Tasks whose details (comments + full description) have already been resolved. Membership *is* the
@@ -155,7 +145,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * implementation issues a live request), and an empty comment list is otherwise indistinguishable
      * from "not fetched yet". Cleared by [refresh]. EDT-only.
      */
-    private val detailCache = HashMap<DetailKey, Task>()
+    private val detailCache = HashMap<TaskKey, Task>()
 
     /**
      * Adapter-fetched properties, keyed like [detailCache] and cleared alongside it.
@@ -165,17 +155,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * says nothing about the assignee. Only successes land here, so a failed read is retried on the next
      * visit instead of sticking as a permanent blank. EDT-only.
      */
-    private val propertyCache = HashMap<DetailKey, TaskExtras>()
+    private val propertyCache = HashMap<TaskKey, TaskExtras>()
 
     /** Linked pull and merge requests, keyed and cleared like [propertyCache], and cached only on success. EDT-only. */
-    private val pullRequestCache = HashMap<DetailKey, List<LinkedPullRequest>>()
+    private val pullRequestCache = HashMap<TaskKey, List<LinkedPullRequest>>()
 
     /**
      * The comments for each task in [detailCache], wherever they came from: the task itself, or the
      * adapter for a provider whose task never carries any — see [TaskEditor.comments]. A task counts as
      * resolved only once it has an entry here too. EDT-only.
      */
-    private val commentCache = HashMap<DetailKey, List<Comment>>()
+    private val commentCache = HashMap<TaskKey, List<Comment>>()
 
     /**
      * One [FallbackIcon] per task icon, so repaints reuse the same instance instead of filling the
@@ -262,7 +252,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         ApplicationManager.getApplication().messageBus.connect(this).subscribe(
             LafManagerListener.TOPIC,
             LafManagerListener {
-                currentDetailTaskId = null
+                currentDetailKey = null
                 updateDetailsFromSelection()
             },
         )
@@ -464,7 +454,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 )
             }
             // The pane already shows this task without them; let the reconcile in rebuild() redraw it.
-            currentDetailTaskId = null
+            currentDetailKey = null
             rebuild()
         }
     }
@@ -474,7 +464,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     /** Rebuild the tree from [cache] using the current grouping + sort. No refetch. */
     private fun rebuild() {
-        val selectedId = selectedTaskNode()?.task?.id
+        val selected = selectedTaskNode()
         rebuilding = true
         try {
             root.removeAllChildren()
@@ -512,7 +502,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
             treeModel.reload()
             expandAll()
-            if (selectedId != null) reselectTask(selectedId)
+            if (selected != null) reselectTask(selected.repository, selected.task.id)
         } finally {
             rebuilding = false
         }
@@ -560,15 +550,22 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         return node?.userObject as? TaskNode
     }
 
-    private fun reselectTask(taskId: String) {
+    /**
+     * Selects the row for [taskId] on [repository], so a rebuild keeps the selection where it was.
+     *
+     * The server is matched by identity first, since two servers can share both a url and task ids. A
+     * reconfiguration replaces every server object, though, so failing that the url stands in for it.
+     */
+    private fun reselectTask(repository: TaskRepository, taskId: String) {
         val tree = treeTable.tree
-        for (row in 0 until tree.rowCount) {
-            val node = tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode
-            if ((node?.userObject as? TaskNode)?.task?.id == taskId) {
-                treeTable.selectionModel.setSelectionInterval(row, row)
-                return
-            }
+        val rows = (0 until tree.rowCount).mapNotNull { row ->
+            val node = (tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? TaskNode
+            node?.takeIf { it.task.id == taskId }?.let { row to it.repository }
         }
+        val row = rows.firstOrNull { it.second === repository }?.first
+            ?: rows.firstOrNull { it.second.url == repository.url }?.first
+            ?: return
+        treeTable.selectionModel.setSelectionInterval(row, row)
     }
 
     /**
@@ -581,9 +578,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private fun updateDetailsFromSelection() {
         if (rebuilding) return // ignore selection churn while the tree is being rebuilt
         val node = selectedTaskNode()
-        val taskId = node?.task?.id
-        if (taskId == currentDetailTaskId) return // selection restored to the same task; nothing to do
-        currentDetailTaskId = taskId
+        val selectedKey = node?.let { TaskKey(it.repository, it.task.id) }
+        if (selectedKey == currentDetailKey) return // selection restored to the same task; nothing to do
+        currentDetailKey = selectedKey
 
         cancelLoadingLabel() // whatever we show next supersedes any pending label
         showingLoadingComments = false
@@ -595,7 +592,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         val task = node.task
         val repository = node.repository
-        val key = DetailKey(repository, task.id)
+        val key = TaskKey(repository, task.id)
 
         loadExtraProperties(task, repository, key, requestId)
         loadPullRequests(task, repository, key, requestId)
@@ -670,12 +667,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Local first because it is always available — the adapter's answer arrives a request later, and
      * appending it keeps the rows already on screen from reshuffling when it does.
      */
-    private fun extraFor(task: Task, repository: TaskRepository, key: DetailKey): List<TaskProperty> =
+    private fun extraFor(task: Task, repository: TaskRepository, key: TaskKey): List<TaskProperty> =
         localProperties(task) + decorationFor(repository, task.id)?.properties.orEmpty() +
             propertyCache[key]?.properties.orEmpty()
 
     /** Renders [task] in the pane with everything resolved for it so far. */
-    private fun showDetails(task: Task, repository: TaskRepository, key: DetailKey, loadingComments: Boolean) {
+    private fun showDetails(task: Task, repository: TaskRepository, key: TaskKey, loadingComments: Boolean) {
         detailsPanel.show(
             task,
             repository,
@@ -709,9 +706,16 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Compared by id rather than by identity: our rows are freshly fetched remote issues, while the
      * active one is the [com.intellij.tasks.LocalTask] built from whichever copy was activated. Cheap
      * enough for a renderer — the platform holds the active task in a field.
+     *
+     * Ids are only unique per server, so the server has to agree too — by url, since the local task
+     * outlives the server objects of the session it was activated in. One that doesn't know its server
+     * is taken on its id alone.
      */
-    private fun isActiveTask(task: Task): Boolean =
-        TaskManager.getManager(project).activeTask.id == task.id
+    private fun isActiveTask(task: Task, repository: TaskRepository): Boolean {
+        val active = TaskManager.getManager(project).activeTask
+        val activeServer = active.repository
+        return active.id == task.id && (activeServer == null || activeServer.url == repository.url)
+    }
 
     /**
      * What the IDE itself knows, from the [LocalTask] behind this issue — which exists only once the
@@ -732,7 +736,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Runs alongside the comment fetch rather than after it: the two are independent reads, and chaining
      * them would make the assignee wait on comments it has nothing to do with.
      */
-    private fun loadExtraProperties(task: Task, repository: TaskRepository, key: DetailKey, requestId: Int) {
+    private fun loadExtraProperties(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
         if (propertyCache.containsKey(key)) return
         val editor = TaskEditors.forRepository(repository) ?: return
 
@@ -759,7 +763,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * detail reads. A failure is logged rather than shown: for Jira this rides on an unofficial API, and
      * a missing section is the honest outcome when it doesn't answer.
      */
-    private fun loadPullRequests(task: Task, repository: TaskRepository, key: DetailKey, requestId: Int) {
+    private fun loadPullRequests(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
         if (pullRequestCache.containsKey(key)) return
         val editor = TaskEditors.forRepository(repository) ?: return
 
@@ -1029,7 +1033,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         decorations: Map<String, TaskDecoration>,
         comments: List<Comment>?,
     ) {
-        val key = DetailKey(repository, taskId)
+        val key = TaskKey(repository, taskId)
         if (refreshed == null || comments == null) {
             detailCache.remove(key)
             commentCache.remove(key)
@@ -1053,7 +1057,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             }
         }
         // The selection hasn't moved, so clear the guard or the pane would decline to re-render.
-        currentDetailTaskId = null
+        currentDetailKey = null
         rebuild()
     }
 
@@ -1094,7 +1098,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 is TaskNode -> {
                     val task = obj.task
                     // The task the IDE is currently on, which the context menu can now switch.
-                    val active = isActiveTask(task)
+                    val active = isActiveTask(task, obj.repository)
                     /*
                      * The active task gets an arrow in the icon slot, where the eye already is: bold alone
                      * proved far too quiet on an id as short as "PC-1". Otherwise, when flat, the server
