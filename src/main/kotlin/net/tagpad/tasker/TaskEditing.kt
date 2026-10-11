@@ -114,6 +114,23 @@ interface ThreadedComment {
     val parentId: String?
 }
 
+/**
+ * One emoji's tally on a comment.
+ *
+ * [emoji] is what gets displayed: the emoji itself as Unicode text, or — for a tracker's custom emoji
+ * that has no Unicode form — its short name, e.g. `:party-parrot:`. [reactedByMe] marks the ones the
+ * current user added, which the pane highlights.
+ */
+data class CommentReaction(val emoji: String, val count: Int, val reactedByMe: Boolean = false)
+
+/**
+ * A comment that carries reactions. Like [ThreadedComment], only comments an adapter builds itself can
+ * have them; the pane shows them in the order given, below the comment's text.
+ */
+interface ReactableComment {
+    val reactions: List<CommentReaction>
+}
+
 /** Resolves the adapter for a server, or null when nothing on it can be edited. */
 object TaskEditors {
 

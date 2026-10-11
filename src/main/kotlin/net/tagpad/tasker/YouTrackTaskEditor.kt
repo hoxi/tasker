@@ -45,14 +45,36 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * comment body to be; the raw `text` is only the fallback, escaped.
      */
     override fun comments(task: Task): List<Comment> {
-        val fields = "text,textPreview,created,deleted,author(fullName,login,avatarUrl)"
+        val fields = "text,textPreview,created,deleted,author(fullName,login,avatarUrl)," +
+            "reactions(reaction,author(login))"
         return readJsonObjects("${requireEndpoint(task)}/comments?fields=$fields", headers())
             .filterNot { it.get("deleted")?.takeIf { d -> d.isJsonPrimitive }?.asBoolean == true }
             .map(::YouTrackComment)
     }
 
-    private inner class YouTrackComment(json: JsonObject) : Comment() {
+    private inner class YouTrackComment(json: JsonObject) : Comment(), ReactableComment {
         private val author = json.objectOrNull("author")
+
+        /**
+         * One entry per person per reaction, folded into a tally per reaction in first-seen order. Ours
+         * are recognised by login, which is what this server is configured to authenticate as.
+         */
+        override val reactions: List<CommentReaction> = run {
+            val me = repository.credentialsOrNull()?.first.orEmpty()
+            json.get("reactions")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+                .orEmpty()
+                .groupBy { it.stringOrEmpty("reaction") }
+                .filterKeys { it.isNotBlank() }
+                .map { (name, entries) ->
+                    val logins = entries.map { it.objectOrNull("author")?.stringOrEmpty("login").orEmpty() }
+                    CommentReaction(
+                        emoji = REACTION_EMOJI[name] ?: ":$name:",
+                        count = entries.size,
+                        reactedByMe = me.isNotBlank() && logins.any { it.equals(me, ignoreCase = true) },
+                    )
+                }
+        }
         private val html = json.stringOrEmpty("textPreview").ifBlank {
             StringUtil.escapeXmlEntities(json.stringOrEmpty("text")).replace("\n", "<br>")
         }
@@ -107,4 +129,26 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
     private fun requireEndpoint(task: Task): String =
         endpoint(task) ?: error("${task.presentableId} cannot be addressed on ${repository.presentableName}")
+
+    private companion object {
+        /**
+         * YouTrack names its reactions rather than sending the emoji, and draws its own artwork for each,
+         * so this is the nearest Unicode emoji to every name its API documentation lists. A name added
+         * since falls back to `:name:` in the pane, which still says what it is.
+         */
+        val REACTION_EMOJI: Map<String, String> = mapOf(
+            "yes" to "✅", "no" to "❌", "question" to "❓", "comment" to "💬", "waiting" to "⏳",
+            "thanks" to "🙏", "thank-you" to "🙏", "thumbs-up" to "👍", "thumbs-down" to "👎",
+            "plus-one" to "➕", "minus-one" to "➖", "ok" to "👌", "okay" to "🆗", "100" to "💯",
+            "strong" to "💪", "clapping" to "👏", "congratulations" to "🎉", "fist" to "👊",
+            "raised-hand" to "✋", "wave" to "👋", "rock" to "🤘", "crossed-fingers" to "🤞",
+            "glad" to "😊", "grinning" to "😀", "joy" to "😂", "tongue-out" to "😛", "wink" to "😉",
+            "saint" to "😇", "cool" to "😎", "nerd" to "🤓", "relieved" to "😌", "surprised" to "😮",
+            "worry" to "😟", "grimacing" to "😬", "scared" to "😱", "sick" to "🤢", "tired" to "😫",
+            "sleepy" to "😪", "tears" to "😢", "mind-blown" to "🤯", "cat-in-love" to "😻",
+            "scared-cat" to "🙀", "eyes" to "👀", "rocket" to "🚀", "teddybear" to "🧸", "red-heart" to "❤️",
+            "zero" to "0️⃣", "one" to "1️⃣", "two" to "2️⃣", "three" to "3️⃣", "four" to "4️⃣",
+            "five" to "5️⃣", "six" to "6️⃣", "seven" to "7️⃣", "eight" to "8️⃣", "nine" to "9️⃣",
+        )
+    }
 }

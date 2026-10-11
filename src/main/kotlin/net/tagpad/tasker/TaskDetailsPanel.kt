@@ -575,6 +575,16 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             sb.append(esc(byline)).append("</div>")
         }
         sb.append("<div class='text'>").append(comment.text.orEmpty()).append("</div>")
+        val reactions = (comment as? ReactableComment)?.reactions.orEmpty().filter { it.count > 0 }
+        if (reactions.isNotEmpty()) {
+            sb.append("<div class='reactions'>")
+            for (reaction in reactions) {
+                val style = if (reaction.reactedByMe) "reaction mine" else "reaction"
+                sb.append("<span class='").append(style).append("'>")
+                    .append(esc(reaction.emoji)).append("&nbsp;").append(reaction.count).append("</span>&nbsp;&nbsp; ")
+            }
+            sb.append("</div>")
+        }
         sb.append("</div>")
     }
 
@@ -617,6 +627,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             .muted { color: $muted; }
             .comment { margin-top: 0; margin-bottom: 14px; }
             .byline { font-size: smaller; color: $muted; margin-top: 0; margin-bottom: 3px; }
+            .reactions { font-size: smaller; color: $muted; margin-top: 2px; margin-bottom: 0; }
+            .mine { color: $link; font-weight: bold; }
         """.trimIndent()
     }
 
