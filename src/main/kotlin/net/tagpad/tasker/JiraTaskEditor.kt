@@ -4,6 +4,8 @@ import com.google.gson.JsonObject
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.IconLoader
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
@@ -13,6 +15,9 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Date
 import java.util.Optional
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.Icon
@@ -46,13 +51,51 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
     }
 
     /**
-     * Read fresh rather than taken from the task: on Cloud the connector searches through API v3, which
-     * returns the description as a document tree rather than text. v2 hands back the same field as the
-     * wiki markup that [setDescription] writes, so an edit round-trips.
+     * Read fresh rather than taken from the task, so the editor opens on what the server holds now rather
+     * than on a list fetch that may be minutes old — and from the same v2 endpoint [setDescription]
+     * writes to, so the wiki markup round-trips.
      */
     override fun currentDescription(task: Task): String =
         readJsonObject("${requireEndpoint(task)}?fields=description", headers())
             .objectOrNull("fields")?.stringOrEmpty("description").orEmpty()
+
+    /**
+     * Read here rather than taken from the task, for two things the connector drops. Its comments carry
+     * the raw wiki markup, where the pane wants HTML — `renderedBody` is Jira's own rendering of it. And
+     * its author model keeps only names, so there is no avatar to show.
+     */
+    override fun comments(task: Task): List<Comment> {
+        val response = readJsonObject(
+            "${requireEndpoint(task)}/comment?expand=renderedBody&maxResults=$MAX_COMMENTS",
+            headers(),
+        )
+        return response.get("comments")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject?.let(::JiraComment) }
+            .orEmpty()
+    }
+
+    private class JiraComment(json: JsonObject) : Comment() {
+        private val author = json.objectOrNull("author")
+        private val html = json.stringOrEmpty("renderedBody").ifBlank {
+            StringUtil.escapeXmlEntities(json.stringOrEmpty("body")).replace("\n", "<br>")
+        }
+        private val created = parseDate(json.stringOrEmpty("created"))
+
+        /** The largest of the four sizes Jira offers, so it stays sharp when the pane scales it down. */
+        private val avatar = author?.objectOrNull("avatarUrls")?.stringOrEmpty("48x48")?.takeIf { it.isNotBlank() }
+
+        override fun getText(): String = html
+
+        override fun getAuthor(): String? = author?.stringOrEmpty("displayName")?.takeIf { it.isNotBlank() }
+
+        override fun getDate(): Date? = created
+
+        /** Emits the avatar ahead of the body, which is where the details pane looks for one. */
+        override fun appendTo(builder: StringBuilder) {
+            if (avatar != null) builder.append("<img src='").append(StringUtil.escapeXmlEntities(avatar)).append("'>")
+            builder.append(html)
+        }
+    }
 
     /** People, which are only worth a request once a task is actually looked at. */
     override fun extraProperties(task: Task): List<TaskProperty> {
@@ -209,6 +252,15 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         val KEY = Regex("[A-Za-z][A-Za-z0-9_]*-\\d+")
 
         const val PAGE_SIZE = 50
+
+        /** Comments per issue. One page, and a generous one: a thread longer than this is rare. */
+        const val MAX_COMMENTS = 1000
+
+        /** Jira's timestamp shape, e.g. `2026-10-11T14:03:12.345+0200`. */
+        val JIRA_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+
+        fun parseDate(text: String): Date? =
+            runCatching { Date.from(OffsetDateTime.parse(text, JIRA_TIMESTAMP).toInstant()) }.getOrNull()
 
         /** Shared across instances — [TaskEditors] builds a fresh editor per call. */
         val ICONS = ConcurrentHashMap<String, Optional<Icon>>()
