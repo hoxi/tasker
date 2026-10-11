@@ -231,25 +231,7 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
      */
     private fun endpoint(task: Task): String? {
         if (token() == null) return null
-        val issueUrl = task.issueUrl?.takeIf { it.isNotBlank() } ?: return null
-
-        val uri = try {
-            URI(issueUrl)
-        } catch (e: URISyntaxException) {
-            return null
-        }
-        val host = uri.host ?: return null
-        val path = uri.path?.trim('/')?.split('/') ?: return null
-        if (path.size < 4 || path[2] != "issues" || path[3].toIntOrNull() == null) return null
-
-        // github.com is served from a separate API host; Enterprise mounts the same API under /api/v3.
-        val apiBase =
-            if (host.equals("github.com", ignoreCase = true) || host.equals("www.github.com", ignoreCase = true)) {
-                "https://api.github.com"
-            } else {
-                "https://$host/api/v3"
-            }
-        return "$apiBase/repos/${path[0]}/${path[1]}/issues/${path[3]}"
+        return githubIssueEndpoint(task.issueUrl?.takeIf { it.isNotBlank() } ?: return null)
     }
 
     private fun requireEndpoint(task: Task): String =
@@ -275,4 +257,25 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
             "confused" to "😕", "heart" to "❤️", "rocket" to "🚀", "eyes" to "👀",
         )
     }
+}
+
+/** The API endpoint of the issue at [issueUrl] on github.com or a GitHub Enterprise host; null for anything else. */
+internal fun githubIssueEndpoint(issueUrl: String): String? {
+    val uri = try {
+        URI(issueUrl)
+    } catch (e: URISyntaxException) {
+        return null
+    }
+    val host = uri.host ?: return null
+    val path = uri.path?.trim('/')?.split('/') ?: return null
+    if (path.size < 4 || path[2] != "issues" || path[3].toIntOrNull() == null) return null
+
+    // github.com is served from a separate API host; Enterprise mounts the same API under /api/v3.
+    val apiBase =
+        if (host.equals("github.com", ignoreCase = true) || host.equals("www.github.com", ignoreCase = true)) {
+            "https://api.github.com"
+        } else {
+            "https://$host/api/v3"
+        }
+    return "$apiBase/repos/${path[0]}/${path[1]}/issues/${path[3]}"
 }

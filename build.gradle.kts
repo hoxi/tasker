@@ -45,6 +45,11 @@ changelog {
 }
 
 dependencies {
+    // Plain JUnit for the pure logic: url mapping, comment threading, status reading. Nothing needs an IDE.
+    testImplementation(platform("org.junit:junit-bom:5.13.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
     intellijPlatform {
         val version: String = providers.gradleProperty("platformVersion").get()
 
@@ -172,6 +177,10 @@ tasks {
             }
         }
     }
+    test {
+        useJUnitPlatform()
+    }
+
     // Set the JVM compatibility versions
     withType<JavaCompile> {
         sourceCompatibility = "25"

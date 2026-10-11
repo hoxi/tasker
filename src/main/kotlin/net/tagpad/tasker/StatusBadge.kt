@@ -106,15 +106,6 @@ open class StatusBadge : JComponent() {
     private fun arc() = JBUI.scale(10)
     private fun marginX() = JBUI.scale(4)
 
-    /**
-     * What a state means, independent of the words a given tracker picks for it.
-     *
-     * Trackers don't agree on vocabulary and most let users invent their own, so this is a best-effort
-     * reading of the name — the only thing available everywhere. It has to be, because the popup knows
-     * a state only as a [com.intellij.tasks.CustomTaskState] with a display name, no type information.
-     */
-    private enum class StatusKind { TODO, IN_PROGRESS, REOPENED, DONE, CUSTOM }
-
     companion object {
         // bg / fg pairs, each theme-aware (light, dark).
         private val GREY = chip(0xDFE1E6, 0x42526E, 0x3C4147, 0xC7CDD6)
@@ -124,34 +115,12 @@ open class StatusBadge : JComponent() {
         private val PURPLE = chip(0xEAE6FF, 0x403294, 0x322A52, 0xB8ACF6)
         private val RED = chip(0xFFEBE6, 0xBF2600, 0x4A2323, 0xF5A79A)
 
-        private fun statusColors(status: String): Pair<Color, Color> = when (classify(status)) {
+        private fun statusColors(status: String): Pair<Color, Color> = when (statusKind(status)) {
             StatusKind.TODO -> GREEN          // actionable
             StatusKind.IN_PROGRESS -> BLUE
             StatusKind.REOPENED -> YELLOW
             StatusKind.DONE -> GREY           // terminal states are de-emphasized
             StatusKind.CUSTOM -> PURPLE       // not grey: an unknown state mustn't read as "finished"
-        }
-
-        private fun classify(status: String): StatusKind {
-            // YouTrack's command syntax braces multi-word values, so states can arrive as "{Won't fix}".
-            val s = status.lowercase().trim().trim('{', '}').trim()
-            return when {
-                "progress" in s || "started" in s || "doing" in s || "review" in s ||
-                    "testing" in s || "implement" in s -> StatusKind.IN_PROGRESS
-
-                // Before the TODO branch: "reopened" contains "open".
-                "reopen" in s -> StatusKind.REOPENED
-
-                "resolv" in s || "done" in s || "closed" in s || "fixed" in s || "complete" in s ||
-                    "verified" in s || "duplicate" in s || "obsolete" in s || "declined" in s ||
-                    "rejected" in s || "invalid" in s || "won't" in s || "wont" in s ||
-                    "can't" in s || "cannot" in s -> StatusKind.DONE
-
-                "open" in s || "to do" in s || "todo" in s || "new" in s || "submitted" in s ||
-                    "backlog" in s || "discuss" in s || "triage" in s || "pending" in s -> StatusKind.TODO
-
-                else -> StatusKind.CUSTOM
-            }
         }
 
         /** Black or white text for [background], by its perceived brightness. */
@@ -162,5 +131,37 @@ open class StatusBadge : JComponent() {
 
         private fun chip(lightBg: Int, lightFg: Int, darkBg: Int, darkFg: Int): Pair<Color, Color> =
             JBColor(Color(lightBg), Color(darkBg)) to JBColor(Color(lightFg), Color(darkFg))
+    }
+}
+
+/**
+ * What a state means, independent of the words a given tracker picks for it.
+ *
+ * Trackers don't agree on vocabulary and most let users invent their own, so this is a best-effort
+ * reading of the name — the only thing available everywhere. It has to be, because the popup knows
+ * a state only as a [com.intellij.tasks.CustomTaskState] with a display name, no type information.
+ */
+internal enum class StatusKind { TODO, IN_PROGRESS, REOPENED, DONE, CUSTOM }
+
+/** Reads which [StatusKind] a tracker's state name describes. */
+internal fun statusKind(status: String): StatusKind {
+    // YouTrack's command syntax braces multi-word values, so states can arrive as "{Won't fix}".
+    val s = status.lowercase().trim().trim('{', '}').trim()
+    return when {
+        "progress" in s || "started" in s || "doing" in s || "review" in s ||
+            "testing" in s || "implement" in s -> StatusKind.IN_PROGRESS
+
+        // Before the TODO branch: "reopened" contains "open".
+        "reopen" in s -> StatusKind.REOPENED
+
+        "resolv" in s || "done" in s || "closed" in s || "fixed" in s || "complete" in s ||
+            "verified" in s || "duplicate" in s || "obsolete" in s || "declined" in s ||
+            "rejected" in s || "invalid" in s || "won't" in s || "wont" in s ||
+            "can't" in s || "cannot" in s -> StatusKind.DONE
+
+        "open" in s || "to do" in s || "todo" in s || "new" in s || "submitted" in s ||
+            "backlog" in s || "discuss" in s || "triage" in s || "pending" in s -> StatusKind.TODO
+
+        else -> StatusKind.CUSTOM
     }
 }

@@ -673,7 +673,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         when {
             loadingComments -> commentsList.add(messagePane("Loading…"))
             comments.isEmpty() -> commentsList.add(messagePane("No comments."))
-            else -> for ((comment, depth) in threaded(comments)) commentsList.add(CommentView(comment, depth))
+            else -> for ((comment, depth) in threadComments(comments)) commentsList.add(CommentView(comment, depth))
         }
         commentsList.revalidate()
         commentsList.repaint()
@@ -739,33 +739,6 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         override fun paint(g: Graphics, allocation: Shape) = Unit
         override fun modelToView(pos: Int, a: Shape, b: Position.Bias): Shape = a
         override fun viewToModel(x: Float, y: Float, a: Shape, biasReturn: Array<Position.Bias>): Int = startOffset
-    }
-
-    /**
-     * Orders comments so each reply follows the comment it answers, paired with its depth in the thread.
-     *
-     * Top-level comments keep the order the tracker gave them, and so do the replies under each one.
-     * A reply whose parent isn't in the list, or that points at itself, is treated as top-level. Should
-     * the parent links ever form a loop, the comments caught in it are appended at the end, unindented,
-     * rather than dropped.
-     */
-    private fun threaded(comments: List<Comment>): List<Pair<Comment, Int>> {
-        val ids = comments.mapNotNullTo(HashSet()) { (it as? ThreadedComment)?.commentId }
-        fun parentOf(comment: Comment): String? =
-            (comment as? ThreadedComment)?.takeIf { it.parentId != it.commentId }?.parentId?.takeIf { it in ids }
-
-        val replies = comments.groupBy(::parentOf)
-        val ordered = ArrayList<Pair<Comment, Int>>(comments.size)
-        val visited = HashSet<Comment>()
-        fun visit(comment: Comment, depth: Int) {
-            if (!visited.add(comment)) return
-            ordered += comment to depth
-            val id = (comment as? ThreadedComment)?.commentId ?: return
-            replies[id]?.forEach { visit(it, depth + 1) }
-        }
-        replies[null]?.forEach { visit(it, 0) }
-        comments.forEach { visit(it, 0) }
-        return ordered
     }
 
     /**
@@ -1255,4 +1228,31 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         /** Resolved per call rather than cached, so captions re-color on a theme switch. */
         fun muted(): Color = NamedColorUtil.getInactiveTextColor()
     }
+}
+
+/**
+ * Orders comments so each reply follows the comment it answers, paired with its depth in the thread.
+ *
+ * Top-level comments keep the order the tracker gave them, and so do the replies under each one.
+ * A reply whose parent isn't in the list, or that points at itself, is treated as top-level. Should
+ * the parent links ever form a loop, the comments caught in it are appended at the end, unindented,
+ * rather than dropped.
+ */
+internal fun threadComments(comments: List<Comment>): List<Pair<Comment, Int>> {
+    val ids = comments.mapNotNullTo(HashSet()) { (it as? ThreadedComment)?.commentId }
+    fun parentOf(comment: Comment): String? =
+        (comment as? ThreadedComment)?.takeIf { it.parentId != it.commentId }?.parentId?.takeIf { it in ids }
+
+    val replies = comments.groupBy(::parentOf)
+    val ordered = ArrayList<Pair<Comment, Int>>(comments.size)
+    val visited = HashSet<Comment>()
+    fun visit(comment: Comment, depth: Int) {
+        if (!visited.add(comment)) return
+        ordered += comment to depth
+        val id = (comment as? ThreadedComment)?.commentId ?: return
+        replies[id]?.forEach { visit(it, depth + 1) }
+    }
+    replies[null]?.forEach { visit(it, 0) }
+    comments.forEach { visit(it, 0) }
+    return ordered
 }
