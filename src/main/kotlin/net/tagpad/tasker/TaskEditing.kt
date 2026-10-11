@@ -3,6 +3,10 @@ package net.tagpad.tasker
 import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
+import net.tagpad.tasker.github.GitHubTaskEditor
+import net.tagpad.tasker.gitlab.GitLabTaskEditor
+import net.tagpad.tasker.jira.JiraTaskEditor
+import net.tagpad.tasker.youtrack.YouTrackTaskEditor
 import java.awt.Color
 import javax.swing.Icon
 
