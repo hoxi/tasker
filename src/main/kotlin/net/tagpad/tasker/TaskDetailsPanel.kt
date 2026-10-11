@@ -20,6 +20,7 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.NamedColorUtil
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.WrapLayout
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Color
@@ -108,6 +109,14 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private val titleRow = TitleRow(summaryText, summaryPen)
 
     private val statusBadge = StatusBadge()
+
+    /**
+     * The status pill, then one pill per tag or label. Wrapping, so a task with many labels grows a line
+     * instead of pushing them out of sight.
+     */
+    private val badgeRow = JPanel(WrapLayout(FlowLayout.LEFT).apply { hgap = 0; vgap = JBUI.scale(4) }).apply {
+        isOpaque = false
+    }
     private val createdField = MetaField("Created")
     private val updatedField = MetaField("Updated")
 
@@ -139,7 +148,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         add(idLabel, c)
         add(browserLink, c.apply { gridx = 1; weightx = 0.0; anchor = GridBagConstraints.EAST; fill = GridBagConstraints.NONE })
         add(titleRow, c.apply { gridx = 0; gridy = 1; gridwidth = 2; weightx = 1.0; anchor = GridBagConstraints.WEST; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(6) })
-        add(statusBadge, c.apply { gridy = 2; fill = GridBagConstraints.NONE; insets = JBUI.insetsTop(10) })
+        add(badgeRow, c.apply { gridy = 2; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(10) })
         add(metaRow, c.apply { gridy = 3; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsTop(14) })
     }
 
@@ -280,8 +289,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     /**
-     * [extra] are fields the caller resolved that the task itself can't carry — see
-     * [TaskEditor.extraProperties]. They arrive late for some providers, which simply means another
+     * [extra] are fields the caller resolved that the task itself can't carry — see [TaskEditor.extras],
+     * as are [priority] and [labels]. They arrive late for some providers, which simply means another
      * [show] for the same task once they land. [status] overrides the task's own, for trackers whose
      * [Task.getState] loses the name — see [TaskDecoration]. [comments] likewise stands in for
      * [Task.getComments] when the caller fetched them separately — see [TaskEditor.comments].
@@ -293,6 +302,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         extra: List<TaskProperty> = emptyList(),
         status: String? = null,
         comments: List<Comment>? = null,
+        priority: TaskPriority? = null,
+        labels: List<TaskLabel> = emptyList(),
     ) {
         if (task == null) {
             issueUrl = null
@@ -320,9 +331,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         shownSummary = task.summary.orEmpty()
         if (!editingSummary) summaryText.text = shownSummary
         statusBadge.setStatus(status ?: statusText(task))
+        renderBadges(labels)
         createdField.setValue(formatDate(task.created))
         updatedField.setValue(formatDate(task.updated))
-        renderMetaFields(task, extra)
+        renderMetaFields(task, extra, priority)
 
         shownDescription = task.description.orEmpty()
         if (!editingDescription) renderDescription()
@@ -345,14 +357,31 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      * Fields are recreated rather than reused because their number varies by provider and by issue —
      * YouTrack alone reports four, GitHub one, a task with no assignee none at all.
      */
-    private fun renderMetaFields(task: Task, extra: List<TaskProperty>) {
+    private fun renderMetaFields(task: Task, extra: List<TaskProperty>, priority: TaskPriority?) {
         metaRow.removeAll()
         metaRow.add(createdField)
         metaRow.add(updatedField)
+        priority?.let { metaRow.add(MetaField("Priority").apply { setValue(it.name, it.icon) }) }
 
         for (property in nativeProperties(task) + extra) {
+            // YouTrack's connector reports Priority as text too; the adapter's, with its colour, wins.
+            if (priority != null && property.label.equals("Priority", ignoreCase = true)) continue
             metaRow.add(MetaField(property.label).apply { setValue(property.value) })
         }
+    }
+
+    /** The status pill first, then the task's labels in the tracker's order. */
+    private fun renderBadges(labels: List<TaskLabel>) {
+        badgeRow.removeAll()
+        badgeRow.add(statusBadge)
+        for (label in labels) {
+            badgeRow.add(StatusBadge().apply {
+                setLabel(label.name, label.background, label.foreground)
+                font = JBFont.small()
+            })
+        }
+        badgeRow.revalidate()
+        badgeRow.repaint()
     }
 
     /**
@@ -886,9 +915,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             add(value, BorderLayout.CENTER)
         }
 
-        fun setValue(text: String) {
+        fun setValue(text: String, icon: Icon? = null) {
             val known = text.isNotBlank()
             value.text = if (known) text else "—"
+            value.icon = icon.takeIf { known }
             value.foreground = if (known) UIUtil.getLabelForeground() else muted()
         }
     }

@@ -49,13 +49,18 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * happened to observe. GitLab reports it pre-formatted in `human_total_time_spent`, so we show that
      * rather than rounding the seconds ourselves and disagreeing with GitLab's own UI.
      *
-     * Adding labels, milestone or due date later is a line each: they arrive in this same object.
+     * Labels arrive as bare names here; GitLab only sends their colours from a separate endpoint, so they
+     * show uncoloured. Adding milestone or due date later is a line each: they arrive in this same object.
      */
-    override fun extraProperties(task: Task): List<TaskProperty> {
-        val issue = readJsonObject(endpoint(task) ?: return emptyList(), headers())
+    override fun extras(task: Task): TaskExtras {
+        val issue = readJsonObject(endpoint(task) ?: return TaskExtras(), headers())
         val stats = issue.objectOrNull("time_stats")
+        val labels = issue.get("labels")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonPrimitive }?.asString?.takeIf(String::isNotBlank) }
+            ?.map { TaskLabel(it) }
+            .orEmpty()
 
-        return buildList {
+        return TaskExtras(labels = labels, properties = buildList {
             // `assignees` is the current field; `assignee` is its long-deprecated singular predecessor,
             // still all that self-managed instances on older versions return.
             val assignees = issue.mapArray("assignees") { it.stringOrEmpty("name") }
@@ -64,7 +69,7 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
             addIfPresent("Time spent", stats?.stringOrEmpty("human_total_time_spent"))
             addIfPresent("Estimate", stats?.stringOrEmpty("human_time_estimate"))
-        }
+        })
     }
 
     private fun updateIssue(task: Task, field: String, value: String) {

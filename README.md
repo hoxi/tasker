@@ -96,13 +96,13 @@ Status changes go through the platform, so they work with **any** tracker that r
 needs a provider adapter, because the platform's task API has no notion of renaming an issue, editing its description,
 or posting a comment.
 
-| Provider                         | Rename | Description | Comment | Extra fields shown             |
-|----------------------------------|:------:|:-----------:|:-------:|--------------------------------|
-| GitHub                           |   ✅   |     ✅      |   ✅    | Assignee                       |
-| GitLab                           |   ✅   |     ✅      |   ✅    | Assignee, Time spent, Estimate |
-| YouTrack                         |   ✅   |     ✅      |   ✅    | Priority, Type, Assignee       |
-| Jira                             |   ✅   |     ✅      |   ✅    | Type, Priority, Assignee, Reporter |
-| Redmine, Trac, Bugzilla, …       |   —    |      —      |    —    | —                              |
+| Provider                         | Rename | Description | Comment | Extra fields shown                              |
+|----------------------------------|:------:|:-----------:|:-------:|-------------------------------------------------|
+| GitHub                           |   ✅   |     ✅      |   ✅    | Assignee, labels (coloured)                     |
+| GitLab                           |   ✅   |     ✅      |   ✅    | Assignee, Time spent, Estimate, labels          |
+| YouTrack                         |   ✅   |     ✅      |   ✅    | Priority (coloured), Type, Assignee, tags (coloured) |
+| Jira                             |   ✅   |     ✅      |   ✅    | Type, Priority (with icon), Assignee, Reporter, labels |
+| Redmine, Trac, Bugzilla, …       |   —    |      —      |    —    | —                                               |
 
 Notes:
 

@@ -6,6 +6,7 @@ import com.intellij.tasks.TaskRepository
 import com.intellij.tasks.impl.BaseRepository
 import com.intellij.util.io.HttpRequests
 import com.intellij.util.io.RequestBuilder
+import java.awt.Color
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -118,6 +119,12 @@ internal fun TaskRepository.currentUserId(read: () -> String?): String? {
 }
 
 private val CURRENT_USERS = ConcurrentHashMap<String, String>()
+
+/** A colour from hex as trackers write it, `#e6f6cf` or `d73a4a`; null for anything else. */
+internal fun parseHexColor(hex: String?): Color? {
+    val digits = hex?.trim()?.removePrefix("#")?.takeIf { it.length == 6 } ?: return null
+    return digits.toIntOrNull(16)?.let(::Color)
+}
 
 /** The server root with any trailing slash removed, or null when it isn't set. */
 internal fun TaskRepository.baseUrlOrNull(): String? = url?.trimEnd('/')?.takeIf { it.isNotBlank() }

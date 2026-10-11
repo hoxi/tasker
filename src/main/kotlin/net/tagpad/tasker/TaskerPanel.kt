@@ -145,7 +145,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * says nothing about the assignee. Only successes land here, so a failed read is retried on the next
      * visit instead of sticking as a permanent blank. EDT-only.
      */
-    private val propertyCache = HashMap<DetailKey, List<TaskProperty>>()
+    private val propertyCache = HashMap<DetailKey, TaskExtras>()
 
     /**
      * The comments for each task in [detailCache], wherever they came from: the task itself, or the
@@ -578,7 +578,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * appending it keeps the rows already on screen from reshuffling when it does.
      */
     private fun extraFor(task: Task, repository: TaskRepository, key: DetailKey): List<TaskProperty> =
-        localProperties(task) + decorationFor(repository, task.id)?.properties.orEmpty() + propertyCache[key].orEmpty()
+        localProperties(task) + decorationFor(repository, task.id)?.properties.orEmpty() +
+            propertyCache[key]?.properties.orEmpty()
 
     /** Renders [task] in the pane with everything resolved for it so far. */
     private fun showDetails(task: Task, repository: TaskRepository, key: DetailKey, loadingComments: Boolean) {
@@ -589,6 +590,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             extra = extraFor(task, repository, key),
             status = decorationFor(repository, task.id)?.status,
             comments = commentCache[key],
+            priority = propertyCache[key]?.priority,
+            labels = propertyCache[key]?.labels.orEmpty(),
         )
     }
 
@@ -607,14 +610,6 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
 
     /**
-     * What the IDE itself knows, from the [LocalTask] behind this issue — which exists only once the
-     * task has been switched to, so most rows contribute nothing.
-     *
-     * Labelled "Tracked in IDE" rather than "Time spent" on purpose: this is the platform's own
-     * stopwatch, counting time this IDE observed the task being active. It is not what the tracker has
-     * logged, and GitLab reports that separately under its own name.
-     */
-    /**
      * Whether this row is the task the IDE is currently on.
      *
      * Compared by id rather than by identity: our rows are freshly fetched remote issues, while the
@@ -624,6 +619,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private fun isActiveTask(task: Task): Boolean =
         TaskManager.getManager(project).activeTask.id == task.id
 
+    /**
+     * What the IDE itself knows, from the [LocalTask] behind this issue — which exists only once the
+     * task has been switched to, so most rows contribute nothing.
+     *
+     * Labelled "Tracked in IDE" rather than "Time spent" on purpose: this is the platform's own
+     * stopwatch, counting time this IDE observed the task being active. It is not what the tracker has
+     * logged, and GitLab reports that separately under its own name.
+     */
     private fun localProperties(task: Task): List<TaskProperty> {
         val local = TaskManager.getManager(project).findTask(task.id) ?: return emptyList()
         return buildList { addIfPresent("Tracked in IDE", formatDuration(local.totalTimeSpent)) }
@@ -640,17 +643,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val editor = TaskEditors.forRepository(repository) ?: return
 
         AppExecutorUtil.getAppExecutorService().execute {
-            val properties = try {
-                editor.extraProperties(task)
+            val extras = try {
+                editor.extras(task)
             } catch (ce: ProcessCanceledException) {
                 return@execute
             } catch (ex: Exception) {
                 return@execute // uncached, so the next visit tries again
             }
             ApplicationManager.getApplication().invokeLater {
-                propertyCache[key] = properties
+                propertyCache[key] = extras
                 if (requestId != detailRequestId) return@invokeLater // selection moved on
-                if (properties.isNotEmpty()) {
+                if (!extras.isEmpty()) {
                     showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
                 }
             }
