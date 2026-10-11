@@ -2,9 +2,22 @@ package net.tagpad.tasker
 
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
+import javax.swing.Icon
 
 /** A label and its value, as the details pane shows it. */
 data class TaskProperty(val label: String, val value: String)
+
+/**
+ * What a row shows that [Task] gets wrong or leaves out, resolved for a whole list at once.
+ *
+ * [status] replaces [statusText] when set, [icon] replaces [Task.getIcon], and [properties] join the
+ * details pane's meta row ahead of anything [TaskEditor.extraProperties] fetches later.
+ */
+data class TaskDecoration(
+    val status: String? = null,
+    val icon: Icon? = null,
+    val properties: List<TaskProperty> = emptyList(),
+)
 
 /**
  * What a task server lets us change, and what it can tell us that [Task] has no room for.
@@ -60,6 +73,16 @@ interface TaskEditor {
      */
     @Throws(Exception::class)
     fun extraProperties(task: Task): List<TaskProperty> = emptyList()
+
+    /**
+     * [TaskDecoration]s for a freshly fetched list, keyed by [Task.getId].
+     *
+     * Unlike [extraProperties], this feeds the list itself — the Status column and the row icon — so it
+     * runs once per refresh for every row, and should batch rather than ask per task. Tasks missing
+     * from the result just render as [Task] describes them. Hits the network, so call it off the EDT.
+     */
+    @Throws(Exception::class)
+    fun decorate(tasks: List<Task>): Map<String, TaskDecoration> = emptyMap()
 }
 
 /** Resolves the adapter for a server, or null when nothing on it can be edited. */
@@ -70,6 +93,7 @@ object TaskEditors {
             GITHUB -> GitHubTaskEditor(repository)
             GITLAB -> GitLabTaskEditor(repository)
             YOUTRACK -> YouTrackTaskEditor(repository)
+            JIRA -> JiraTaskEditor(repository)
             else -> null
         }
 
@@ -82,4 +106,7 @@ object TaskEditors {
     private const val GITLAB = "Gitlab"
 
     private const val YOUTRACK = "YouTrack"
+
+    /** All caps, as `JiraRepositoryType.getName()` spells it. */
+    private const val JIRA = "JIRA"
 }

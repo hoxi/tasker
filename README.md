@@ -101,7 +101,8 @@ or posting a comment.
 | GitHub                           |   ✅   |     ✅      |   ✅    | Assignee                       |
 | GitLab                           |   ✅   |     ✅      |   ✅    | Assignee, Time spent, Estimate |
 | YouTrack                         |   ✅   |     ✅      |   ✅    | Priority, Type, Assignee       |
-| Jira, Redmine, Trac, Bugzilla, … |   —    |      —      |    —    | —                              |
+| Jira                             |   ✅   |     ✅      |   ✅    | Type, Priority, Assignee, Reporter |
+| Redmine, Trac, Bugzilla, …       |   —    |      —      |    —    | —                              |
 
 Notes:
 
@@ -110,6 +111,9 @@ Notes:
   `Type` and the issue has a value for it.
 - **GitLab's "Time spent" is real** — it's what everyone has logged against the issue, read from
   `time_stats`. GitHub's issue API has no time tracking at all.
+- **Jira shows its own status names and issue-type icons** — "In Review" rather than a generic "Open", and the Bug or
+  Story icon rather than a blank. The bundled connector reduces both away (Cloud serves the icons as SVG, which it can't
+  decode), so Tasker reads them back over the REST API after the list loads.
 - **"Tracked in IDE"** is a separate row, shown for any provider once you've switched to the task. That one is the IDE's
   own stopwatch, not anything the tracker knows about.
 - Adding labels, milestones or due dates is a line per adapter — the plumbing is generic.
