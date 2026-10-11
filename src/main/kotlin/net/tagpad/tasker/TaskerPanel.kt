@@ -1005,6 +1005,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * selected, after every posted comment. Restored only when the focus is now nowhere or in the
      * toolbar, which is not somewhere a user would have moved it in the second a write takes; a click
      * into the list or the pane meanwhile is left alone.
+     *
+     * The focus owner from before may itself be gone — an inline editor's Save button is removed by the
+     * save — and then the pane's own resting place stands in for it.
      */
     private fun restoreFocus(focusBefore: Component?) {
         if (focusBefore == null) return
@@ -1014,7 +1017,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             val strayed = now == null ||
                 (SwingUtilities.isDescendingFrom(now, this) && !SwingUtilities.isDescendingFrom(now, treeTable) &&
                     !SwingUtilities.isDescendingFrom(now, detailsPanel))
-            if (strayed && now !== focusBefore && focusBefore.isShowing) focusBefore.requestFocusInWindow()
+            if (!strayed || now === focusBefore) return@onEdt
+            if (focusBefore.isShowing) focusBefore.requestFocusInWindow() else detailsPanel.parkFocus()
         }
     }
 
