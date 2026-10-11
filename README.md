@@ -44,6 +44,9 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
   switch.
 - **Closed issues** are hidden by default and greyed when shown.
 - **Task limit** caps how many issues are requested per server. Lower is faster; the default is 30.
+- **Dates** follow the IDE's own date format, as set under *Settings | Appearance & Behavior | System Settings*.
+
+Grouping, closed issues, the task limit and the sort column are remembered per project.
 
 Servers load in parallel and the tree fills in as each one answers, so a slow tracker never holds up the rest. One that
 fails says so on its own row and leaves the others alone.
@@ -52,9 +55,15 @@ fails says so on its own row and leaves the others alone.
 
 ![Details pane](docs/images/details-pane.png)
 
-Select a row and the pane shows the issue's id, title, status, dates, whatever extra fields the tracker exposes, its
-description, and its comments. Comments and the full description are fetched lazily on selection and cached, so the list
-load never pays for them.
+Select a row and the pane shows the issue's id, title, status, labels, dates, priority and whatever other fields the
+tracker exposes, its description, any linked pull or merge requests, and its comments. Comments and the full description
+are fetched lazily on selection and cached, so the list load never pays for them.
+
+- **Comments** are rendered as the tracker renders them, with the author's avatar. Replies sit indented under the
+  comment they answer wherever the tracker says which one that is, and emoji reactions are tallied below each comment —
+  your own highlighted.
+- **Pull requests** lists the pull and merge requests linked to the issue, each with its state and a link to it. For
+  GitLab merge requests, *Show in IDE* opens the GitLab plugin's Merge Requests tool window.
 
 ### Editing in place
 
@@ -63,7 +72,9 @@ jump.
 
 - `Enter` commits a title, `Escape` cancels
 - The description has Save and Cancel buttons; `Escape` cancels
-- The composer at the foot of the pane posts a comment — `Enter` sends, `Shift+Enter` inserts a newline
+- The composer at the foot of the pane posts a comment — `Enter` sends, `Shift+Enter` inserts a newline, `Escape`
+  discards the draft
+- A pen next to **your own comments** rewrites them in place, with the same Save, Cancel and `Escape` as the description
 
 ![Inline editing](docs/images/inline-edit.png)
 
@@ -84,7 +95,7 @@ provider doesn't support it at all, or this particular issue isn't addressable.
 
 |                        |                                                                                                                                                  |
 |------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
-| **Refresh**            | Reload every server and drop cached comments                                                                                                     |
+| **Refresh**            | Reload every server and drop cached comments — done for you after the servers are reconfigured                                                   |
 | **Group by Server**    | Toggle the per-server tree                                                                                                                       |
 | **Show Closed Issues** | Fetch and show closed/resolved issues too                                                                                                        |
 | **Tasks & Contexts**   | The bundled plugin's own menu — Switch Task, Open Task, Close Task, Save/Load/Clear Context, Configure Servers — without going to the Tools menu |
@@ -96,13 +107,13 @@ Status changes go through the platform, so they work with **any** tracker that r
 needs a provider adapter, because the platform's task API has no notion of renaming an issue, editing its description,
 or posting a comment.
 
-| Provider                         | Rename | Description | Comment | Extra fields shown                              |
-|----------------------------------|:------:|:-----------:|:-------:|-------------------------------------------------|
-| GitHub                           |   ✅   |     ✅      |   ✅    | Assignee, labels (coloured)                     |
-| GitLab                           |   ✅   |     ✅      |   ✅    | Assignee, Time spent, Estimate, labels          |
-| YouTrack                         |   ✅   |     ✅      |   ✅    | Priority (coloured), Type, Assignee, tags (coloured) |
-| Jira                             |   ✅   |     ✅      |   ✅    | Type, Priority (with icon), Assignee, Reporter, labels |
-| Redmine, Trac, Bugzilla, …       |   —    |      —      |    —    | —                                               |
+| Provider                   | Rename | Description | Comment | Edit own comments | Reactions | Linked PRs | Extra fields shown                                     |
+|----------------------------|:------:|:-----------:|:-------:|:-----------------:|:---------:|:----------:|--------------------------------------------------------|
+| GitHub                     |   ✅   |     ✅      |   ✅    |        ✅         |    ✅     |     ✅     | Assignee, labels (coloured)                            |
+| GitLab                     |   ✅   |     ✅      |   ✅    |         —         |     —     |     ✅     | Assignee, Time spent, Estimate, labels                 |
+| YouTrack                   |   ✅   |     ✅      |   ✅    |        ✅         |    ✅     |     ✅     | Priority (coloured), Type, Assignee, tags (coloured)   |
+| Jira                       |   ✅   |     ✅      |   ✅    |        ✅         |     —     |     ✅     | Type, Priority (with icon), Assignee, Reporter, labels |
+| Redmine, Trac, Bugzilla, … |   —    |      —      |    —    |         —         |     —     |     —      | —                                                      |
 
 Notes:
 
@@ -114,12 +125,17 @@ Notes:
 - **Jira shows its own status names and issue-type icons** — "In Review" rather than a generic "Open", and the Bug or
   Story icon rather than a blank. The bundled connector reduces both away (Cloud serves the icons as SVG, which it can't
   decode), so Tasker reads them back over the REST API after the list loads.
+- **Jira's linked pull requests** come from the issue's Development panel, which only Atlassian's undocumented
+  `dev-status` API exposes. If that stops answering, the section simply doesn't appear. Jira reactions aren't shown at
+  all: Atlassian serves them only to its own web UI, and refuses API tokens.
+- **GitHub's linked pull requests** are those that mention the issue. One linked only through the sidebar's Development
+  box, without ever mentioning it, isn't visible to the REST API.
 - **"Tracked in IDE"** is a separate row, shown for any provider once you've switched to the task. That one is the IDE's
   own stopwatch, not anything the tracker knows about.
-- Adding labels, milestones or due dates is a line per adapter — the plumbing is generic.
+- Adding milestones or due dates is a line per adapter — the plumbing is generic.
 
-Providers without an adapter still list, sort, group and change status perfectly well; they just can't be edited from
-the pane.
+Providers without an adapter still list, sort, group, show their details and comments, and change status perfectly
+well; they just can't be edited from the pane, and show only what their connector provides.
 
 ## Building
 
