@@ -84,6 +84,12 @@ interface TaskEditor {
     fun comments(task: Task): List<Comment>? = null
 
     /**
+     * Whether [comments] is overridden, so the pane knows to call it even for a task that already
+     * carries comments — Jira's do, unrendered and without avatars. Answerable without the network.
+     */
+    val suppliesComments: Boolean get() = false
+
+    /**
      * [TaskDecoration]s for a freshly fetched list, keyed by [Task.getId].
      *
      * Unlike [extraProperties], this feeds the list itself — the Status column and the row icon — so it
@@ -92,6 +98,20 @@ interface TaskEditor {
      */
     @Throws(Exception::class)
     fun decorate(tasks: List<Task>): Map<String, TaskDecoration> = emptyMap()
+}
+
+/**
+ * A comment that knows its place in a thread, so the details pane can show replies under what they
+ * answer. [com.intellij.tasks.Comment] has no notion of threads, so only comments an adapter builds
+ * itself can carry one; anything else renders as a top-level comment.
+ */
+interface ThreadedComment {
+
+    /** Unique among the task's comments. */
+    val commentId: String
+
+    /** The [commentId] this one replies to, or null for a top-level comment. */
+    val parentId: String?
 }
 
 /** Resolves the adapter for a server, or null when nothing on it can be edited. */

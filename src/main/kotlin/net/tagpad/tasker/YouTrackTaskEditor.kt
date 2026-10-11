@@ -35,6 +35,8 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         HttpRequests.post("${requireEndpoint(task)}/comments", JSON_CONTENT_TYPE).sendJson(payload, headers())
     }
 
+    override val suppliesComments: Boolean get() = true
+
     /**
      * Read here because the connector never does: `YouTrackTask.getComments()` returns an empty array
      * unconditionally, and its issue query doesn't ask for comments to begin with.

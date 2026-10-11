@@ -64,6 +64,8 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * the raw wiki markup, where the pane wants HTML — `renderedBody` is Jira's own rendering of it. And
      * its author model keeps only names, so there is no avatar to show.
      */
+    override val suppliesComments: Boolean get() = true
+
     override fun comments(task: Task): List<Comment> {
         val response = readJsonObject(
             "${requireEndpoint(task)}/comment?expand=renderedBody&maxResults=$MAX_COMMENTS",
@@ -74,7 +76,21 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
             .orEmpty()
     }
 
-    private class JiraComment(json: JsonObject) : Comment() {
+    /**
+     * One comment, with its place in the thread when Jira gives one away.
+     *
+     * Jira Cloud shows replies in its web UI, but Atlassian shipped them without any API change: the
+     * documented comment endpoints return a flat list, in creation order, with no parent link. The
+     * reply lookup below covers the field names an API that did expose it would plausibly use, so it
+     * starts working without a Tasker release should Atlassian add one. Until then every Jira comment
+     * is top-level.
+     */
+    private class JiraComment(json: JsonObject) : Comment(), ThreadedComment {
+        override val commentId: String = json.idOrEmpty("id")
+        override val parentId: String? =
+            (json.idOrEmpty("parentId").ifBlank { json.objectOrNull("parent")?.idOrEmpty("id").orEmpty() })
+                .takeIf { it.isNotBlank() }
+
         private val author = json.objectOrNull("author")
         private val html = json.stringOrEmpty("renderedBody").ifBlank {
             StringUtil.escapeXmlEntities(json.stringOrEmpty("body")).replace("\n", "<br>")

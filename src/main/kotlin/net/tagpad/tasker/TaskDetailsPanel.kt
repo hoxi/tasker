@@ -451,8 +451,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         renderDescription()
         bodyColumn.revalidate()
 
-        // In read mode the text area has no border, and setEditing(false) hides its caret, so this parks
-        // the focus without marking anything.
+        /*
+         * In read mode the text area has no border, and setEditing(false) hides its caret, so this parks
+         * the focus without marking anything.
+         */
         if (heldFocus) descriptionText.requestFocusInWindow()
     }
 
@@ -506,9 +508,36 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         when {
             loadingComments -> sb.append("<div class='muted'>Loading…</div>")
             comments.isEmpty() -> sb.append("<div class='muted'>No comments.</div>")
-            else -> for (comment in comments) appendComment(sb, comment)
+            else -> for ((comment, depth) in threaded(comments)) appendComment(sb, comment, depth)
         }
         return sb.append("</body></html>").toString()
+    }
+
+    /**
+     * Orders comments so each reply follows the comment it answers, paired with its depth in the thread.
+     *
+     * Top-level comments keep the order the tracker gave them, and so do the replies under each one.
+     * A reply whose parent isn't in the list, or that points at itself, is treated as top-level. Should
+     * the parent links ever form a loop, the comments caught in it are appended at the end, unindented,
+     * rather than dropped.
+     */
+    private fun threaded(comments: List<Comment>): List<Pair<Comment, Int>> {
+        val ids = comments.mapNotNullTo(HashSet()) { (it as? ThreadedComment)?.commentId }
+        fun parentOf(comment: Comment): String? =
+            (comment as? ThreadedComment)?.takeIf { it.parentId != it.commentId }?.parentId?.takeIf { it in ids }
+
+        val replies = comments.groupBy(::parentOf)
+        val ordered = ArrayList<Pair<Comment, Int>>(comments.size)
+        val visited = HashSet<Comment>()
+        fun visit(comment: Comment, depth: Int) {
+            if (!visited.add(comment)) return
+            ordered += comment to depth
+            val id = (comment as? ThreadedComment)?.commentId ?: return
+            replies[id]?.forEach { visit(it, depth + 1) }
+        }
+        replies[null]?.forEach { visit(it, 0) }
+        comments.forEach { visit(it, 0) }
+        return ordered
     }
 
     /**
@@ -520,14 +549,21 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      * The description is the opposite case — raw markdown — which is part of why it now lives outside
      * this pane entirely.
      */
-    private fun appendComment(sb: StringBuilder, comment: Comment) {
+    private fun appendComment(sb: StringBuilder, comment: Comment, depth: Int) {
         val byline = listOfNotNull(
             comment.author?.takeIf { it.isNotBlank() },
             comment.date?.let(::formatDate)?.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
         val avatar = avatarUrl(comment)
 
-        sb.append("<div class='comment'>")
+        /*
+         * A reply starts where its parent's text does, past the avatar, so the thread reads as one block.
+         * Capped, so a long chain of replies can't push the text out of a narrow pane.
+         */
+        val indent = JBUI.scale(AVATAR_SIZE + REPLY_INDENT_GAP) * depth.coerceAtMost(MAX_REPLY_DEPTH)
+        sb.append("<div class='comment'")
+        if (indent > 0) sb.append(" style='margin-left: ").append(indent).append("px'")
+        sb.append(">")
         if (avatar != null || byline.isNotEmpty()) {
             sb.append("<div class='byline'>")
             if (avatar != null) {
@@ -558,7 +594,11 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             text.isEmpty() -> rendered
             else -> rendered.indexOf(text).takeIf { it >= 0 }?.let { rendered.substring(0, it) } ?: return null
         }
-        return IMG_SRC.find(header)?.groupValues?.get(1)
+        /*
+         * The url comes out of an HTML attribute, so it is still entity-encoded; appendComment encodes it
+         * again, and a url carrying "&amp;" would arrive at the server as "&amp;amp;".
+         */
+        return IMG_SRC.find(header)?.groupValues?.get(1)?.let(StringUtil::unescapeXmlEntities)
     }
 
     /**
@@ -841,6 +881,12 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** Avatar edge length, scaled. Half of the platform renderer's hardcoded 40. */
         const val AVATAR_SIZE = 20
+
+        /** Added to [AVATAR_SIZE] for a reply's indent: the non-breaking space after the avatar, roughly. */
+        const val REPLY_INDENT_GAP = 4
+
+        /** Replies deeper than this stop indenting further. */
+        const val MAX_REPLY_DEPTH = 3
 
         private val IMG_SRC = Regex("""<img[^>]*\ssrc\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 
