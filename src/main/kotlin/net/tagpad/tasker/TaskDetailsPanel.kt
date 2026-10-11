@@ -485,16 +485,26 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         swap(descriptionBody, descriptionText)
         renderDescription()
 
-        // The read view is never editable, so it draws no caret: this parks the focus without marking anything.
-        if (heldFocus) descriptionText.requestFocusInWindow()
+        if (heldFocus) parkFocus()
     }
 
     /**
-     * Whether the focus is inside [component]. The editor is about to be removed, and Swing hands the
-     * focus of a removed component to whatever comes next in the traversal order — nowhere near here;
-     * the toolbar's task limit spinner, in practice, left wearing a focus ring for no reason. So an
-     * edit that held the focus takes it back. Only one that held it: the same exits run when the
-     * selection moves to another task, and stealing focus off the list then would be the worse bug.
+     * Gives the focus to the pane's body column, which is focusable for exactly this: it draws nothing
+     * when focused, and unlike every text and button inside it, it is never removed or replaced.
+     *
+     * Swing hands the focus of a removed component to whatever comes next in the traversal order, which
+     * from here wraps round to the toolbar — the task limit spinner, left selected for no reason. Every
+     * edit removes its editor, and every write re-renders the comments, so a focus parked on anything
+     * inside them would be lost again a moment later. Call it after the removal, so it is the last word.
+     */
+    fun parkFocus() {
+        bodyColumn.requestFocusInWindow()
+    }
+
+    /**
+     * Whether the focus is inside [component], which is about to be removed — see [parkFocus]. Only focus
+     * held there is taken back: the same exits run when the selection moves to another task, and stealing
+     * the focus off the list then would be the worse bug.
      */
     private fun holdsFocus(component: JComponent): Boolean =
         KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
@@ -525,11 +535,11 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
     /**
      * Esc in the composer, the way it works in the title and description editors: the draft is
-     * discarded and the focus leaves, parked on the description's read view, which draws no caret.
+     * discarded and the focus leaves the composer.
      */
     private fun cancelComment() {
         commentField.text = ""
-        descriptionText.requestFocusInWindow()
+        parkFocus()
     }
 
     /** Turns [view] into an editor in place, starting from the comment's text as the tracker stores it. */
@@ -564,8 +574,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             pendingComments = null
             renderComments(comments, loading)
         }
-        // See holdsFocus. The view may have been replaced by now, so park on whichever comment comes first.
-        if (heldFocus) UIUtil.findComponentOfType(commentsList, JEditorPane::class.java)?.requestFocusInWindow()
+        if (heldFocus) parkFocus()
     }
 
     /**
@@ -643,6 +652,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         if (loadingComments || comments.isEmpty()) "COMMENTS" else "COMMENTS (${comments.size})"
 
     private fun renderComments(comments: List<Comment>, loadingComments: Boolean) {
+        val heldFocus = holdsFocus(commentsList)
         commentsList.removeAll()
         when {
             loadingComments -> commentsList.add(messagePane("Loading…"))
@@ -651,6 +661,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         }
         commentsList.revalidate()
         commentsList.repaint()
+        if (heldFocus) parkFocus()
     }
 
     private fun messagePane(message: String): JEditorPane =
@@ -966,6 +977,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private class BodyColumn : JPanel(GridBagLayout()), Scrollable {
         init {
             isOpaque = false
+            isFocusable = true // see parkFocus
         }
 
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
