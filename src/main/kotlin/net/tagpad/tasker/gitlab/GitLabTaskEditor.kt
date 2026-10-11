@@ -145,17 +145,18 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
     private fun endpoint(task: Task): String? {
         if (repository.credentialsOrNull() == null) return null
         val base = repository.baseUrlOrNull() ?: return null
-        val issueUrl = task.issueUrl?.takeIf { it.isNotBlank() } ?: return null
-        val match = ISSUE_URL.matchEntire(issueUrl) ?: return null
-
-        val project = URLEncoder.encode(match.groupValues[1], StandardCharsets.UTF_8)
-        return "$base/api/v4/projects/$project/issues/${match.groupValues[2]}"
+        return gitLabIssueEndpoint(base, task.issueUrl?.takeIf { it.isNotBlank() } ?: return null)
     }
 
     private fun requireEndpoint(task: Task): String =
         endpoint(task) ?: error("${task.presentableId} has no usable GitLab issue url")
+}
 
-    private companion object {
-        private val ISSUE_URL = Regex("""https?://[^/]+/(.+?)(?:/-)?/issues/(\d+)""")
-    }
+private val ISSUE_URL = Regex("""https?://[^/]+/(.+?)(?:/-)?/issues/(\d+)""")
+
+/** The API endpoint, under the server root [base], of the issue at the web url [issueUrl]; null if it isn't one. */
+internal fun gitLabIssueEndpoint(base: String, issueUrl: String): String? {
+    val match = ISSUE_URL.matchEntire(issueUrl) ?: return null
+    val project = URLEncoder.encode(match.groupValues[1], StandardCharsets.UTF_8)
+    return "$base/api/v4/projects/$project/issues/${match.groupValues[2]}"
 }

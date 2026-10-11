@@ -184,7 +184,7 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         val found = LinkedHashMap<String, LinkedPullRequest>()
         for (type in types) {
-            val host = codeHost(type)
+            val host = jiraCodeHost(type)
             val appType = URLEncoder.encode(type, StandardCharsets.UTF_8)
             val query = "issueId=$issueId&applicationType=$appType&dataType=pullrequest"
             val detail = readJsonObject("$site/rest/dev-status/latest/issue/detail?$query", headers())
@@ -197,7 +197,7 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
                     val url = pr.stringOrEmpty("url").takeIf { it.isNotBlank() } ?: continue
                     found[url] = LinkedPullRequest(
                         host = host,
-                        reference = reference(pr.idOrEmpty("id"), host),
+                        reference = jiraPullRequestReference(pr.idOrEmpty("id"), host),
                         title = pr.stringOrEmpty("name"),
                         url = url,
                         state = when (pr.stringOrEmpty("status").uppercase()) {
@@ -390,28 +390,6 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         /** Jira's timestamp shape, e.g. `2026-10-11T14:03:12.345+0200`. */
         val JIRA_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
 
-        /**
-         * The code host behind a dev-status application type. "stash" is Bitbucket's old name, which the
-         * API kept; "githube" is GitHub Enterprise.
-         */
-        fun codeHost(applicationType: String): CodeHost {
-            val type = applicationType.lowercase()
-            return when {
-                "gitlab" in type -> CodeHost.GITLAB
-                "github" in type -> CodeHost.GITHUB
-                "bitbucket" in type || "stash" in type -> CodeHost.BITBUCKET
-                else -> CodeHost.OTHER
-            }
-        }
-
-        /** dev-status ids usually arrive as `!12` or `#12` already; a bare number gets its host's prefix. */
-        fun reference(id: String, host: CodeHost): String = when {
-            id.isBlank() -> ""
-            id.first() in "!#" -> id
-            host == CodeHost.GITLAB -> "!$id"
-            else -> "#$id"
-        }
-
         fun JsonElement.asIntOrNull(): Int? =
             takeIf { it.isJsonPrimitive }?.let { runCatching { it.asInt }.getOrNull() }
 
@@ -429,4 +407,26 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         /** Shared across instances — [TaskEditors] builds a fresh editor per call. */
         val ICONS = ConcurrentHashMap<String, Optional<Icon>>()
     }
+}
+
+/**
+ * The code host behind a dev-status application type. "stash" is Bitbucket's old name, which the
+ * API kept; "githube" is GitHub Enterprise.
+ */
+internal fun jiraCodeHost(applicationType: String): CodeHost {
+    val type = applicationType.lowercase()
+    return when {
+        "gitlab" in type -> CodeHost.GITLAB
+        "github" in type -> CodeHost.GITHUB
+        "bitbucket" in type || "stash" in type -> CodeHost.BITBUCKET
+        else -> CodeHost.OTHER
+    }
+}
+
+/** dev-status ids usually arrive as `!12` or `#12` already; a bare number gets its host's prefix. */
+internal fun jiraPullRequestReference(id: String, host: CodeHost): String = when {
+    id.isBlank() -> ""
+    id.first() in "!#" -> id
+    host == CodeHost.GITLAB -> "!$id"
+    else -> "#$id"
 }
