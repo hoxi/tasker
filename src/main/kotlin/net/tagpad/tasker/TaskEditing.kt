@@ -90,6 +90,17 @@ interface TaskEditor {
     val suppliesComments: Boolean get() = false
 
     /**
+     * Whether [comment] can be rewritten by the current user, which decides whether it gets a pen.
+     * Answerable without the network: whose comment it is was settled when it was read.
+     */
+    fun canEditComment(task: Task, comment: Comment): Boolean = false
+
+    /** Replaces [comment]'s text with [body], in the same markup [EditableComment.source] was read in. */
+    @Throws(Exception::class)
+    fun editComment(task: Task, comment: Comment, body: String): Unit =
+        throw UnsupportedOperationException("$providerName comments can't be edited")
+
+    /**
      * [TaskDecoration]s for a freshly fetched list, keyed by [Task.getId].
      *
      * Unlike [extraProperties], this feeds the list itself — the Status column and the row icon — so it
@@ -129,6 +140,23 @@ data class CommentReaction(val emoji: String, val count: Int, val reactedByMe: B
  */
 interface ReactableComment {
     val reactions: List<CommentReaction>
+}
+
+/**
+ * A comment that can be rewritten, from an adapter that read it with enough to do so.
+ *
+ * [source] is the text as the tracker stores it — markdown, or Jira's wiki markup — rather than the
+ * rendered HTML the pane shows, since that is what an edit has to start from and send back.
+ */
+interface EditableComment {
+
+    /** Unique among the task's comments. */
+    val commentId: String
+
+    /** Whether the current user wrote it; only those are offered for editing. */
+    val isMine: Boolean
+
+    val source: String
 }
 
 /** Resolves the adapter for a server, or null when nothing on it can be edited. */

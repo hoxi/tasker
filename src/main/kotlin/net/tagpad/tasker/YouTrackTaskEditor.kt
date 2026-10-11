@@ -45,36 +45,55 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * comment body to be; the raw `text` is only the fallback, escaped.
      */
     override fun comments(task: Task): List<Comment> {
-        val fields = "text,textPreview,created,deleted,author(fullName,login,avatarUrl)," +
-            "reactions(reaction,author(login))"
+        val fields = "id,text,textPreview,created,deleted,author(id,fullName,login,avatarUrl)," +
+            "reactions(reaction,author(id))"
+        val me = currentUser()
         return readJsonObjects("${requireEndpoint(task)}/comments?fields=$fields", headers())
             .filterNot { it.get("deleted")?.takeIf { d -> d.isJsonPrimitive }?.asBoolean == true }
-            .map(::YouTrackComment)
+            .map { YouTrackComment(it, me) }
     }
 
-    private inner class YouTrackComment(json: JsonObject) : Comment(), ReactableComment {
+    override fun canEditComment(task: Task, comment: Comment): Boolean =
+        (comment as? YouTrackComment)?.isMine == true && endpoint(task) != null
+
+    /** Like issues, comments are updated with a POST to the entity itself. */
+    override fun editComment(task: Task, comment: Comment, body: String) {
+        val id = (comment as? YouTrackComment)?.commentId?.takeIf { it.isNotBlank() }
+            ?: error("This comment can't be addressed on ${repository.presentableName}")
+        val payload = JsonObject().apply { addProperty("text", body) }
+        HttpRequests.post("${requireEndpoint(task)}/comments/$id", JSON_CONTENT_TYPE).sendJson(payload, headers())
+    }
+
+    /** The current user's entity id, which is how comment and reaction authors are matched to them. */
+    private fun currentUser(): String? = repository.currentUserId {
+        readJsonObject("${repository.baseUrlOrNull() ?: return@currentUserId null}/api/users/me?fields=id", headers())
+            .idOrEmpty("id")
+    }
+
+    private inner class YouTrackComment(json: JsonObject, me: String?) : Comment(), ReactableComment, EditableComment {
         private val author = json.objectOrNull("author")
 
-        /**
-         * One entry per person per reaction, folded into a tally per reaction in first-seen order. Ours
-         * are recognised by login, which is what this server is configured to authenticate as.
-         */
-        override val reactions: List<CommentReaction> = run {
-            val me = repository.credentialsOrNull()?.first.orEmpty()
+        override val commentId: String = json.idOrEmpty("id")
+
+        override val isMine: Boolean = me != null && author?.idOrEmpty("id") == me
+
+        /** Markdown, as YouTrack stores it and takes it back. */
+        override val source: String = json.stringOrEmpty("text")
+
+        /** One entry per person per reaction, folded into a tally per reaction in first-seen order. */
+        override val reactions: List<CommentReaction> =
             json.get("reactions")?.takeIf { it.isJsonArray }?.asJsonArray
                 ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
                 .orEmpty()
                 .groupBy { it.stringOrEmpty("reaction") }
                 .filterKeys { it.isNotBlank() }
                 .map { (name, entries) ->
-                    val logins = entries.map { it.objectOrNull("author")?.stringOrEmpty("login").orEmpty() }
                     CommentReaction(
                         emoji = REACTION_EMOJI[name] ?: ":$name:",
                         count = entries.size,
-                        reactedByMe = me.isNotBlank() && logins.any { it.equals(me, ignoreCase = true) },
+                        reactedByMe = me != null && entries.any { it.objectOrNull("author")?.idOrEmpty("id") == me },
                     )
                 }
-        }
         private val html = json.stringOrEmpty("textPreview").ifBlank {
             StringUtil.escapeXmlEntities(json.stringOrEmpty("text")).replace("\n", "<br>")
         }

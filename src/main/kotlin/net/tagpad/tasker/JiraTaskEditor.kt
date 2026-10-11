@@ -59,21 +59,37 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         readJsonObject("${requireEndpoint(task)}?fields=description", headers())
             .objectOrNull("fields")?.stringOrEmpty("description").orEmpty()
 
+    override val suppliesComments: Boolean get() = true
+
     /**
      * Read here rather than taken from the task, for two things the connector drops. Its comments carry
      * the raw wiki markup, where the pane wants HTML — `renderedBody` is Jira's own rendering of it. And
      * its author model keeps only names, so there is no avatar to show.
      */
-    override val suppliesComments: Boolean get() = true
-
     override fun comments(task: Task): List<Comment> {
         val response = readJsonObject(
             "${requireEndpoint(task)}/comment?expand=renderedBody&maxResults=$MAX_COMMENTS",
             headers(),
         )
+        val me = currentUser()
         return response.get("comments")?.takeIf { it.isJsonArray }?.asJsonArray
-            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject?.let(::JiraComment) }
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject?.let { json -> JiraComment(json, me) } }
             .orEmpty()
+    }
+
+    override fun canEditComment(task: Task, comment: Comment): Boolean =
+        (comment as? JiraComment)?.isMine == true && issueEndpoint(task) != null
+
+    override fun editComment(task: Task, comment: Comment, body: String) {
+        val id = (comment as? JiraComment)?.commentId?.takeIf { it.isNotBlank() }
+            ?: error("This comment can't be addressed on ${repository.presentableName}")
+        val payload = JsonObject().apply { addProperty("body", body) }
+        HttpRequests.put("${requireEndpoint(task)}/comment/$id", JSON_CONTENT_TYPE).sendJson(payload, headers())
+    }
+
+    /** The current user, identified the way comment authors are — see [userId]. */
+    private fun currentUser(): String? = repository.currentUserId {
+        userId(readJsonObject("${apiBase() ?: return@currentUserId null}/myself", headers()))
     }
 
     /**
@@ -85,13 +101,18 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * starts working without a Tasker release should Atlassian add one. Until then every Jira comment
      * is top-level.
      */
-    private class JiraComment(json: JsonObject) : Comment(), ThreadedComment {
+    private class JiraComment(json: JsonObject, me: String?) : Comment(), ThreadedComment, EditableComment {
         override val commentId: String = json.idOrEmpty("id")
         override val parentId: String? =
             (json.idOrEmpty("parentId").ifBlank { json.objectOrNull("parent")?.idOrEmpty("id").orEmpty() })
                 .takeIf { it.isNotBlank() }
 
         private val author = json.objectOrNull("author")
+
+        override val isMine: Boolean = me != null && author?.let(::userId) == me
+
+        /** Wiki markup, which is what v2 takes back on an edit. */
+        override val source: String = json.stringOrEmpty("body")
         private val html = json.stringOrEmpty("renderedBody").ifBlank {
             StringUtil.escapeXmlEntities(json.stringOrEmpty("body")).replace("\n", "<br>")
         }
@@ -274,6 +295,14 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         /** Jira's timestamp shape, e.g. `2026-10-11T14:03:12.345+0200`. */
         val JIRA_TIMESTAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+
+        /**
+         * A user's identity: `accountId` on Cloud, where it is all a user object is guaranteed to carry,
+         * and `key` or `name` on Server and Data Center, which predate account ids.
+         */
+        fun userId(user: JsonObject): String? =
+            listOf("accountId", "key", "name")
+                .firstNotNullOfOrNull { user.stringOrEmpty(it).takeIf(String::isNotBlank) }
 
         fun parseDate(text: String): Date? =
             runCatching { Date.from(OffsetDateTime.parse(text, JIRA_TIMESTAMP).toInstant()) }.getOrNull()
