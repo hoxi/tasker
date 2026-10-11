@@ -17,6 +17,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.panels.VerticalLayout
+import com.intellij.util.ui.ExtendableHTMLViewFactory
 import com.intellij.util.ui.HTMLEditorKitBuilder
 import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
@@ -36,6 +37,7 @@ import java.awt.GridBagLayout
 import java.awt.GridLayout
 import java.awt.KeyboardFocusManager
 import java.awt.Rectangle
+import java.awt.Shape
 import java.awt.event.ActionEvent
 import java.awt.event.ActionListener
 import java.awt.event.ComponentAdapter
@@ -58,7 +60,10 @@ import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.HyperlinkEvent
 import javax.swing.plaf.basic.BasicTextUI
+import javax.swing.text.Element
+import javax.swing.text.Position
 import javax.swing.text.View
+import javax.swing.text.html.ObjectView
 import kotlin.math.max
 import kotlin.math.min
 
@@ -681,7 +686,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
     /** A read-only HTML pane for comment content, whose links open in the browser. */
     private fun htmlPane(): JEditorPane = JEditorPane().apply {
-        editorKit = HTMLEditorKitBuilder().withWordWrapViewFactory().build()
+        editorKit = HTMLEditorKitBuilder()
+            .withViewFactoryExtensions(::withoutEmbeddedComponents, ExtendableHTMLViewFactory.Extensions.WORD_WRAP)
+            .build()
         isEditable = false
         isOpaque = false
         /*
@@ -708,6 +715,25 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
                 revalidate()
             }
         })
+    }
+
+    /**
+     * Renders an `<object>` element as nothing at all.
+     *
+     * Swing's HTML support still honours the tag, by instantiating whatever component class its `classid`
+     * names and calling setters from its parameters — markup no comment has any business carrying, and
+     * comments are written by anyone with access to the issue. Replacing the view before it is attached
+     * means the component is never created.
+     */
+    private fun withoutEmbeddedComponents(element: Element, view: View): View? =
+        if (view is ObjectView) EmptyView(element) else null
+
+    /** A view that takes no space and paints nothing. */
+    private class EmptyView(element: Element) : View(element) {
+        override fun getPreferredSpan(axis: Int): Float = 0f
+        override fun paint(g: Graphics, allocation: Shape) = Unit
+        override fun modelToView(pos: Int, a: Shape, b: Position.Bias): Shape = a
+        override fun viewToModel(x: Float, y: Float, a: Shape, biasReturn: Array<Position.Bias>): Int = startOffset
     }
 
     /**
@@ -770,12 +796,12 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      */
     private fun bodyHtml(comment: Comment): String {
         /*
-         * A tracker without an adapter hands us its connector's comment text as is, which for several —
-         * Trello's, for one — is plain text with line breaks. The platform's own Comment.appendTo turns
-         * those into <br>, so do the same for them; adapters' comments are HTML already, where a literal
-         * line break means nothing and converting it would add blank lines.
+         * A tracker without an adapter hands us its connector's comment text as is, which for nearly all
+         * of them — Redmine, Trello, Bugzilla, Mantis — is plain text, written by whoever commented. So
+         * it is escaped, which also keeps any markup in it from reaching the pane, and its line breaks
+         * become <br>. Adapters' comments are HTML already, rendered and sanitized by the tracker.
          */
-        val text = comment.text.orEmpty().let { if (shownEditor == null) it.replace("\n", "<br>") else it }
+        val text = comment.text.orEmpty().let { if (shownEditor == null) esc(it).replace("\n", "<br>") else it }
         val sb = StringBuilder("<div class='comment'>")
         sb.append("<div class='text'>").append(text).append("</div>")
         val reactions = (comment as? ReactableComment)?.reactions.orEmpty().filter { it.count > 0 }
