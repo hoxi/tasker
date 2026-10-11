@@ -1,12 +1,16 @@
 package net.tagpad.tasker
 
 import com.google.gson.JsonObject
+import com.intellij.openapi.util.text.StringUtil
+import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.tasks.impl.BaseRepository
 import com.intellij.util.io.HttpRequests
 import java.net.URI
 import java.net.URISyntaxException
+import java.time.Instant
+import java.util.Date
 
 /**
  * Edits GitHub issues over their REST API, since the tasks API can't express any of these operations.
@@ -33,6 +37,61 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
     override fun addComment(task: Task, body: String) {
         val payload = JsonObject().apply { addProperty("body", body) }
         HttpRequests.post("${requireEndpoint(task)}/comments", JSON_CONTENT_TYPE).sendJson(payload, headers())
+    }
+
+    override val suppliesComments: Boolean get() = true
+
+    /**
+     * Read again rather than taken from the task, for the reactions: the connector's comment model keeps
+     * the rendered body, author and avatar, and drops the `reactions` summary GitHub sends alongside.
+     *
+     * Null without a token, which leaves the connector's own comments in place — it reads public
+     * repositories anonymously, where this adapter has no endpoint to call.
+     */
+    override fun comments(task: Task): List<Comment>? {
+        val endpoint = endpoint(task) ?: return null
+        // The html media type is what puts body_html in the response, rendered as on github.com.
+        val headers = headers() + ("Accept" to "application/vnd.github.html+json")
+
+        val comments = ArrayList<Comment>()
+        for (page in 1..MAX_COMMENT_PAGES) {
+            val batch = readJsonObjects("$endpoint/comments?per_page=$COMMENTS_PER_PAGE&page=$page", headers)
+            batch.mapTo(comments, ::GitHubComment)
+            if (batch.size < COMMENTS_PER_PAGE) break
+        }
+        return comments
+    }
+
+    private class GitHubComment(json: JsonObject) : Comment(), ReactableComment {
+        private val user = json.objectOrNull("user")
+        private val html = json.stringOrEmpty("body_html").ifBlank {
+            StringUtil.escapeXmlEntities(json.stringOrEmpty("body")).replace("\n", "<br>")
+        }
+        private val created = runCatching { Date.from(Instant.parse(json.stringOrEmpty("created_at"))) }.getOrNull()
+        private val avatar = user?.stringOrEmpty("avatar_url")?.takeIf { it.isNotBlank() }
+
+        /**
+         * Counts only: the summary doesn't say who reacted, so none can be marked as the user's own
+         * without a further request per comment.
+         */
+        override val reactions: List<CommentReaction> = json.objectOrNull("reactions")?.let { summary ->
+            REACTION_EMOJI.mapNotNull { (key, emoji) ->
+                val count = summary.get(key)?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+                CommentReaction(emoji, count).takeIf { count > 0 }
+            }
+        }.orEmpty()
+
+        override fun getText(): String = html
+
+        override fun getAuthor(): String? = user?.stringOrEmpty("login")?.takeIf { it.isNotBlank() }
+
+        override fun getDate(): Date? = created
+
+        /** Emits the avatar ahead of the body, which is where the details pane looks for one. */
+        override fun appendTo(builder: StringBuilder) {
+            if (avatar != null) builder.append("<img src='").append(StringUtil.escapeXmlEntities(avatar)).append("'>")
+            builder.append(html)
+        }
     }
 
     /**
@@ -103,5 +162,17 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
     private companion object {
         const val API_VERSION = "2022-11-28"
+
+        /** GitHub's maximum page size. */
+        const val COMMENTS_PER_PAGE = 100
+
+        /** A thousand comments; a thread past that is better read on github.com. */
+        const val MAX_COMMENT_PAGES = 10
+
+        /** GitHub's eight reactions, keyed as its API names them, in the order github.com shows them. */
+        val REACTION_EMOJI: Map<String, String> = linkedMapOf(
+            "+1" to "👍", "-1" to "👎", "laugh" to "😄", "hooray" to "🎉",
+            "confused" to "😕", "heart" to "❤️", "rocket" to "🚀", "eyes" to "👀",
+        )
     }
 }
