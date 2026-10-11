@@ -22,6 +22,7 @@ import com.intellij.openapi.progress.Task as ProgressTask
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.util.Condition
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Comment
 import com.intellij.tasks.CustomTaskState
@@ -176,6 +177,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * comments." for as long as the real fetch took. EDT-only.
      */
     private var showingLoadingComments: Boolean = false
+    /** Set once by [dispose]; background results arriving after it are dropped. EDT-only. */
+    private var disposed: Boolean = false
+
     /** True while the tree is being rebuilt, so selection churn from reload() doesn't refetch details. */
     private var rebuilding: Boolean = false
 
@@ -363,8 +367,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 } catch (ex: Exception) {
                     ServerGroup(repo, emptyList(), ex.message ?: ex.javaClass.simpleName)
                 }
-                ApplicationManager.getApplication().invokeLater {
-                    if (generation != loadGeneration) return@invokeLater // superseded by a newer refresh
+                onEdt {
+                    if (generation != loadGeneration) return@onEdt // superseded by a newer refresh
                     cache = cache.map { if (it.repository === repo) result else it }
                     rebuild()
                 }
@@ -390,8 +394,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
         if (decorations.isEmpty()) return
 
-        ApplicationManager.getApplication().invokeLater {
-            if (generation != loadGeneration) return@invokeLater
+        onEdt {
+            if (generation != loadGeneration) return@onEdt
             cache = cache.map { group ->
                 if (group.repository !== repository) group
                 else ServerGroup(
@@ -579,7 +583,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 null
             }
             val comments = full?.let { loadComments(repository, it) }
-            ApplicationManager.getApplication().invokeLater {
+            onEdt {
                 /*
                  * Cache before the staleness check: the result is still valid even if the selection moved
                  * on. Failures aren't cached, so they're retried on the next visit rather than sticking.
@@ -588,7 +592,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     detailCache[key] = full
                     commentCache[key] = comments
                 }
-                if (requestId != detailRequestId) return@invokeLater // selection moved on; its own timer now owns the pane
+                if (requestId != detailRequestId) return@onEdt // selection moved on; its own timer now owns the pane
                 cancelLoadingLabel()
                 showingLoadingComments = false
                 showDetails(full ?: task, repository, key, loadingComments = false)
@@ -677,9 +681,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             } catch (ex: Exception) {
                 return@execute // uncached, so the next visit tries again
             }
-            ApplicationManager.getApplication().invokeLater {
+            onEdt {
                 propertyCache[key] = extras
-                if (requestId != detailRequestId) return@invokeLater // selection moved on
+                if (requestId != detailRequestId) return@onEdt // selection moved on
                 if (!extras.isEmpty()) {
                     showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
                 }
@@ -705,9 +709,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 LOG.info("Could not read pull requests for ${task.presentableId} on ${repository.presentableName}", ex)
                 return@execute // uncached, so the next visit tries again
             }
-            ApplicationManager.getApplication().invokeLater {
+            onEdt {
                 pullRequestCache[key] = pullRequests
-                if (requestId != detailRequestId) return@invokeLater // selection moved on
+                if (requestId != detailRequestId) return@onEdt // selection moved on
                 if (pullRequests.isNotEmpty()) {
                     showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
                 }
@@ -717,8 +721,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     /** The task listener unregisters itself against this; the timer would otherwise outlive the panel. */
     override fun dispose() {
+        disposed = true
         cancelLoadingLabel()
     }
+
+    /**
+     * Runs [action] on the EDT, unless the panel has been disposed by then. Every background read ends
+     * here, and one that outlives its panel — a project closed mid-refresh — must not rebuild a dead
+     * tree or ask a disposed project's TaskManager anything.
+     */
+    private fun onEdt(action: () -> Unit) =
+        ApplicationManager.getApplication().invokeLater({ action() }, Condition<Any?> { disposed })
 
     /** Stops any pending "Loading comments…" label so it can't fire over content that has already arrived. */
     private fun cancelLoadingLabel() {
@@ -774,6 +787,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             }
 
             override fun onSuccess() {
+                if (disposed) return
                 val error = failure
                 val stateItems = when {
                     error != null -> listOf(TaskMenuItem.Message(error.message ?: "Could not load task states"))
@@ -833,6 +847,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 }
 
                 override fun onSuccess() {
+                    if (disposed) return
                     val error = failure
                     if (error != null) notifyFailure("Loading description", error) else onLoaded(loaded.orEmpty())
                 }
@@ -901,6 +916,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             }
 
             override fun onSuccess() {
+                if (disposed) return
                 val error = failure
                 if (error != null) {
                     notifyFailure(progressTitle, error)
@@ -925,7 +941,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private fun restoreFocus(focusBefore: Component?) {
         if (focusBefore == null) return
         // Queued behind the focus transfers the re-render requested, so it sees where they landed.
-        ApplicationManager.getApplication().invokeLater {
+        onEdt {
             val now = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
             val strayed = now == null ||
                 (SwingUtilities.isDescendingFrom(now, this) && !SwingUtilities.isDescendingFrom(now, treeTable) &&
