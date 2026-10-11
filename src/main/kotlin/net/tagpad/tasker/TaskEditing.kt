@@ -1,5 +1,6 @@
 package net.tagpad.tasker
 
+import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import javax.swing.Icon
@@ -73,6 +74,14 @@ interface TaskEditor {
      */
     @Throws(Exception::class)
     fun extraProperties(task: Task): List<TaskProperty> = emptyList()
+
+    /**
+     * The task's comments, for a provider whose [Task.getComments] doesn't carry them.
+     *
+     * Null, the default, means the task's own are the real ones. Hits the network, so call it off the EDT.
+     */
+    @Throws(Exception::class)
+    fun comments(task: Task): List<Comment>? = null
 
     /**
      * [TaskDecoration]s for a freshly fetched list, keyed by [Task.getId].
