@@ -7,9 +7,11 @@ import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.util.io.HttpRequests
 import com.intellij.util.ui.ColorIcon
+import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.CommentReaction
 import net.tagpad.tasker.EditableComment
 import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.ReactableComment
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
@@ -121,6 +123,44 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
     }
 
     /** The current user's entity id, which is how comment and reaction authors are matched to them. */
+    /**
+     * Pull requests from the issue's VCS changes, which hold commits and pull requests in one list told
+     * apart by `$type`. YouTrack reports no state for a pull request, so none is shown.
+     *
+     * The pull request fields are asked for on the whole list. Should a server refuse fields that its
+     * commits don't have, the base ones are asked for instead, and the title taken from the text.
+     */
+    override fun pullRequests(task: Task): List<LinkedPullRequest> {
+        val endpoint = endpoint(task) ?: return emptyList()
+        val full = "\$type,id,idReadable,idExternal,title,url,urls,text"
+        val base = "\$type,id,urls,text"
+        fun read(fields: String) =
+            readJsonObjects("$endpoint/vcsChanges?fields=$fields&\$top=$MAX_VCS_CHANGES", headers())
+        val changes = runCatching { read(full) }.getOrElse { read(base) }
+
+        return changes
+            .filter { it.stringOrEmpty("\$type") == "PullRequest" }
+            .mapNotNull { pr ->
+                val urls = pr.get("urls")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { it.takeIf { e -> e.isJsonPrimitive }?.asString }.orEmpty()
+                val url = pr.stringOrEmpty("url").ifBlank { urls.firstOrNull().orEmpty() }.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val host = when {
+                    "github" in url -> CodeHost.GITHUB
+                    "gitlab" in url || "/-/merge_requests/" in url -> CodeHost.GITLAB
+                    "bitbucket" in url -> CodeHost.BITBUCKET
+                    else -> CodeHost.OTHER
+                }
+                val number = pr.stringOrEmpty("idExternal")
+                val reference = pr.stringOrEmpty("idReadable").ifBlank {
+                    if (number.isBlank()) "" else if (host == CodeHost.GITLAB) "!$number" else "#$number"
+                }
+                val title = pr.stringOrEmpty("title")
+                    .ifBlank { pr.stringOrEmpty("text").lineSequence().firstOrNull().orEmpty() }
+                LinkedPullRequest(host, reference, title, url)
+            }
+    }
+
     private fun currentUser(): String? = repository.currentUserId {
         readJsonObject("${repository.baseUrlOrNull() ?: return@currentUserId null}/api/users/me?fields=id", headers())
             .idOrEmpty("id")
@@ -206,6 +246,9 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         endpoint(task) ?: error("${task.presentableId} cannot be addressed on ${repository.presentableName}")
 
     private companion object {
+        /** VCS changes read per issue; commits count towards it too, and pull requests are among them. */
+        const val MAX_VCS_CHANGES = 200
+
         /**
          * YouTrack names its reactions rather than sending the emoji, and draws its own artwork for each,
          * so this is the nearest Unicode emoji to every name its API documentation lists. A name added
