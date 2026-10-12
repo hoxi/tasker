@@ -5,22 +5,22 @@ import java.awt.Component
 import java.awt.Cursor
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.LayoutManager
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JComponent
-import javax.swing.JLayeredPane
+import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
 /**
- * Lets an item be dragged to another place among its siblings, by a handle on it.
+ * Lets an item in a [ReorderPanel] be dragged to another place among its siblings, by a handle on it.
  *
- * Nothing moves while the item is carried: it is tinted where it stands and a line marks where it would land,
- * both painted on a layer above the window. Only on release is the item moved, once, and [install]'s
- * `onDropped` called so the caller can read the new order back from the parent's children. Moving the real
- * component under the pointer on every drag step is what made earlier versions jump about. Works for a column
+ * Nothing moves while the item is carried: the panel tints it where it stands and draws a line where it would
+ * land, in its own coordinates, over its children. Only on release is the item moved, once, and [install]'s
+ * `onDropped` called so the caller can read the new order back from the panel's children. Works for a column
  * of rows and for chips on wrapping lines alike — see [dropSlot].
  */
 internal object DragReorder {
@@ -29,46 +29,39 @@ internal object DragReorder {
         handle.cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
         val listener = object : MouseAdapter() {
             private var pressedAt: Point? = null
-            private var overlay: Overlay? = null
+            private var dragging = false
             private var target = -1
 
             override fun mousePressed(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
                 pressedAt = e.point
+                dragging = false
                 target = -1
             }
 
             override fun mouseDragged(e: MouseEvent) {
                 val start = pressedAt ?: return
                 // A click that wobbles a pixel or two is still a click.
-                if (overlay == null && start.distance(e.point) < JBUI.scale(DRAG_THRESHOLD)) return
-                val parent = item.parent as? JComponent ?: return
-                val layers = SwingUtilities.getRootPane(parent)?.layeredPane ?: return
-                val shown = overlay ?: Overlay().also {
-                    it.bounds = Rectangle(0, 0, layers.width, layers.height)
-                    layers.add(it, JLayeredPane.DRAG_LAYER)
-                    overlay = it
-                }
+                if (!dragging && start.distance(e.point) < JBUI.scale(DRAG_THRESHOLD)) return
+                val panel = item.parent as? ReorderPanel ?: return
+                dragging = true
                 val peers = peers(item)
                 val from = peers.indexOf(item)
-                val pointer = SwingUtilities.convertPoint(e.component, e.point, parent)
                 val bounds = peers.map { it.bounds }
+                val pointer = SwingUtilities.convertPoint(e.component, e.point, panel)
                 val slot = dropSlot(bounds, pointer)
                 target = targetIndex(from, slot)
-                shown.carried = SwingUtilities.convertRectangle(parent, item.bounds, layers)
-                shown.marker = if (target == from) null
-                else SwingUtilities.convertRectangle(parent, marker(bounds, slot, pointer, JBUI.scale(2)), layers)
-                shown.repaint()
+                panel.showDrag(
+                    carried = item.bounds,
+                    marker = if (target == from) null else marker(bounds, slot, pointer, JBUI.scale(2)),
+                )
             }
 
             override fun mouseReleased(e: MouseEvent) {
                 pressedAt = null
-                val shown = overlay ?: return
-                overlay = null
-                shown.parent?.let { layers ->
-                    layers.remove(shown)
-                    layers.repaint()
-                }
+                if (!dragging) return
+                dragging = false
+                (item.parent as? ReorderPanel)?.showDrag(carried = null, marker = null)
                 if (moveTo(item, target)) onDropped()
             }
         }
@@ -111,41 +104,34 @@ internal object DragReorder {
     fun targetIndex(from: Int, slot: Int): Int = if (slot > from) slot - 1 else slot
 
     /**
-     * The line showing [slot]: across the column between two rows, or upright between two chips. A slot at
-     * the end of one line is also the start of the next; the line goes where the [point]er is.
+     * The line showing [slot]: across the column between two rows, or upright between two chips, kept within
+     * the siblings' extent so it isn't clipped at either end. A slot at the end of one line is also the start
+     * of the next; the line goes where the [point]er is.
      */
     fun marker(bounds: List<Rectangle>, slot: Int, point: Point, thickness: Int): Rectangle {
+        val extent = bounds.reduce(Rectangle::union)
         val before = bounds.getOrNull(slot - 1)
         val after = bounds.getOrNull(slot)
         if (!isWrapping(bounds)) {
-            val left = bounds.minOf { it.x }
-            val width = bounds.maxOf { it.maxX.toInt() } - left
             val y = when {
                 before == null -> after!!.y
                 after == null -> before.maxY.toInt()
                 else -> (before.maxY.toInt() + after.y) / 2
             }
-            return Rectangle(left, y - thickness / 2, width, thickness)
+            val top = clamp(y - thickness / 2, extent.y, extent.maxY.toInt() - thickness)
+            return Rectangle(extent.x, top, extent.width, thickness)
         }
-        val sameLine = before != null && after != null && before.y == after.y
-        val x: Int
-        val line: Rectangle
-        when {
-            sameLine -> {
-                x = (before.maxX.toInt() + after.x) / 2
-                line = after
-            }
-            after != null && (before == null || point.y >= after.y) -> {
-                x = after.x
-                line = after
-            }
-            else -> {
-                x = before!!.maxX.toInt()
-                line = before
-            }
+        val (x, line) = when {
+            before != null && after != null && sharesLine(before, after) ->
+                (before.maxX.toInt() + after.x) / 2 to after
+            after != null && (before == null || point.y >= after.y) -> after.x to after
+            else -> before!!.maxX.toInt() to before
         }
-        return Rectangle(x - thickness / 2, line.y, thickness, line.height)
+        val left = clamp(x - thickness / 2, extent.x, extent.maxX.toInt() - thickness)
+        return Rectangle(left, line.y, thickness, line.height)
     }
+
+    private fun clamp(value: Int, min: Int, max: Int): Int = value.coerceIn(min, maxOf(min, max))
 
     /** Chips share lines; rows each have one to themselves. */
     private fun isWrapping(bounds: List<Rectangle>): Boolean =
@@ -154,28 +140,42 @@ internal object DragReorder {
     private fun sharesLine(a: Rectangle, b: Rectangle): Boolean = a.y < b.maxY && b.y < a.maxY
 
     private const val DRAG_THRESHOLD = 4
+}
 
-    /** Paints the carried item's tint and the drop line above everything; never takes the mouse. */
-    private class Overlay : JComponent() {
-        var carried: Rectangle? = null
-        var marker: Rectangle? = null
+/** A panel whose items [DragReorder] can drag into a new order; it paints the drag over its children. */
+internal class ReorderPanel(layout: LayoutManager) : JPanel(layout) {
 
-        override fun paintComponent(g: Graphics) {
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                val arc = JBUI.scale(6)
-                carried?.let {
-                    g2.color = JBUI.CurrentTheme.DragAndDrop.ROW_BACKGROUND
-                    g2.fillRoundRect(it.x, it.y, it.width, it.height, arc, arc)
-                }
-                marker?.let {
-                    g2.color = JBUI.CurrentTheme.DragAndDrop.BORDER_COLOR
-                    g2.fillRect(it.x, it.y, it.width, it.height)
-                }
-            } finally {
-                g2.dispose()
+    private var carried: Rectangle? = null
+    private var marker: Rectangle? = null
+
+    init {
+        isOpaque = false
+    }
+
+    fun showDrag(carried: Rectangle?, marker: Rectangle?) {
+        if (carried == this.carried && marker == this.marker) return
+        this.carried = carried
+        this.marker = marker
+        repaint()
+    }
+
+    override fun paint(g: Graphics) {
+        super.paint(g)
+        if (carried == null && marker == null) return
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val arc = JBUI.scale(6)
+            carried?.let {
+                g2.color = JBUI.CurrentTheme.DragAndDrop.ROW_BACKGROUND
+                g2.fillRoundRect(it.x, it.y, it.width, it.height, arc, arc)
             }
+            marker?.let {
+                g2.color = JBUI.CurrentTheme.DragAndDrop.BORDER_COLOR
+                g2.fillRect(it.x, it.y, it.width, it.height)
+            }
+        } finally {
+            g2.dispose()
         }
     }
 }

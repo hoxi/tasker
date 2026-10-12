@@ -39,16 +39,16 @@ class DragReorderTest {
     }
 
     @Test
-    fun `the row marker runs across the column between the rows`() {
+    fun `the row marker runs across the column between the rows, inside the ends`() {
         assertEquals(Rectangle(0, 19, 200, 2), DragReorder.marker(rows, 1, Point(10, 15), 2))
-        assertEquals(Rectangle(0, 59, 200, 2), DragReorder.marker(rows, 3, Point(10, 500), 2))
+        assertEquals(Rectangle(0, 58, 200, 2), DragReorder.marker(rows, 3, Point(10, 500), 2))
     }
 
     @Test
-    fun `the chip marker stands between chips, on the pointer's line`() {
+    fun `the chip marker stands between chips, on the pointer's line, inside the ends`() {
         assertEquals(Rectangle(49, 0, 2, 20), DragReorder.marker(chips, 1, Point(60, 10), 2))
         // Slot 2 is both the end of the first line and the start of the second.
-        assertEquals(Rectangle(99, 0, 2, 20), DragReorder.marker(chips, 2, Point(90, 10), 2))
-        assertEquals(Rectangle(-1, 20, 2, 20), DragReorder.marker(chips, 2, Point(10, 30), 2))
+        assertEquals(Rectangle(98, 0, 2, 20), DragReorder.marker(chips, 2, Point(90, 10), 2))
+        assertEquals(Rectangle(0, 20, 2, 20), DragReorder.marker(chips, 2, Point(10, 30), 2))
     }
 }

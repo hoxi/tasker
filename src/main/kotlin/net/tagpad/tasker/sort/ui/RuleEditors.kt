@@ -69,7 +69,7 @@ private class AssigneeRuleEditor(
     private val onChange: (SortRule) -> Unit,
 ) : RuleEditor {
 
-    private val chips = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(4), JBUI.scale(2))).apply { isOpaque = false }
+    private val chips = ReorderPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(4), JBUI.scale(2)))
 
     private val addButton = InplaceButton("Add a person", AllIcons.General.Add, ActionListener { choosePerson() })
 
