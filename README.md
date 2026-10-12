@@ -43,7 +43,7 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
 - **The active task** is marked with a right arrow and bold text, and it updates the moment you switch, however you
   switch.
 - **Closed issues** are hidden by default and greyed when shown.
-- **Task limit** caps how many issues are requested per server. Lower is faster; the default is 30.
+- **Task list limit** caps how many issues are requested from each server. Lower is faster; the default is 30.
 - **Dates** follow the IDE's own date format, as set under *Settings | Appearance & Behavior | System Settings*.
 
 Grouping, closed issues, the task limit and the sort column are remembered per project.
@@ -51,10 +51,11 @@ Grouping, closed issues, the task limit and the sort column are remembered per p
 Servers load in parallel and the tree fills in as each one answers, so a slow tracker never holds up the rest. One that
 fails says so on its own row and leaves the others alone.
 
-Everything read from a server — the lists, and each task's details, comments, fields and pull requests — is kept for five
-minutes. Toggling *Show Closed Issues* or lowering the task limit shows a list already held instead of asking every
-server again, and revisiting a task is instant. Anything older is still shown straight away, and read again in the
-background. **Refresh** always asks every server afresh.
+Everything read from a server — the lists, and each task's details, comments, fields and pull requests — is kept for as
+long as Task Management keeps its own issue cache: *Update issue cache every N minutes* under **Settings | Tools |
+Tasks**, 20 by default. Toggling *Show Closed Issues* or lowering the limit shows a list already held instead of asking
+every server again, and revisiting a task is instant. While the tool window is showing, anything older is read again in
+the background and swapped in; with that setting switched off, nothing is. **Refresh** always asks every server afresh.
 
 ## The details pane
 
@@ -104,7 +105,7 @@ provider doesn't support it at all, or this particular issue isn't addressable.
 | **Group by Server**    | Toggle the per-server tree                                                                                                                       |
 | **Show Closed Issues** | Fetch and show closed/resolved issues too                                                                                                        |
 | **Tasks & Contexts**   | The bundled plugin's own menu — Switch Task, Open Task, Close Task, Save/Load/Clear Context, Configure Servers — without going to the Tools menu |
-| **Task limit**         | Issues requested per server                                                                                                                      |
+| **Task list limit**    | Issues requested from each server                                                                                                                |
 
 ## What works per provider
 
