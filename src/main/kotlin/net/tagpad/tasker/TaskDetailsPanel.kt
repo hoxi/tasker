@@ -97,6 +97,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         fun postComment(text: String)
 
         fun saveComment(comment: Comment, text: String)
+
+        /** Shows [issue], linked from the task on display: its row if the list has one, the browser if not. */
+        fun openIssue(issue: LinkedIssue)
     }
 
     // ---- header ----------------------------------------------------------------------------------
@@ -190,6 +193,19 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         add(pullRequestsList, BorderLayout.CENTER)
     }
 
+    private val linksHeading = sectionLabel("LINKED ISSUES")
+
+    /** Relation captions in the first column, the issues beside them, their statuses at the end. */
+    private val linksList = JPanel(GridBagLayout()).apply { isOpaque = false }
+
+    /** Linked issues, grouped by how they relate; hidden while there are none, like the pull requests. */
+    private val linksSection = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        isOpaque = false
+        isVisible = false
+        add(linksHeading, BorderLayout.NORTH)
+        add(linksList, BorderLayout.CENTER)
+    }
+
     private val commentsHeading = sectionLabel("COMMENTS")
 
     /**
@@ -209,10 +225,11 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         }
         add(descriptionSection, c)
         add(pullRequestsSection, c.apply { gridy = 1; insets = JBUI.insetsTop(16) })
-        add(commentsHeading, c.apply { gridy = 2; insets = JBUI.insetsTop(16) })
-        add(commentsList, c.apply { gridy = 3; insets = JBUI.insetsTop(6) })
+        add(linksSection, c.apply { gridy = 2; insets = JBUI.insetsTop(16) })
+        add(commentsHeading, c.apply { gridy = 3; insets = JBUI.insetsTop(16) })
+        add(commentsList, c.apply { gridy = 4; insets = JBUI.insetsTop(6) })
         // Soaks up leftover height so a short task's content stays at the top.
-        add(Box.createVerticalGlue(), c.apply { gridy = 4; weighty = 1.0; fill = GridBagConstraints.BOTH; insets = JBUI.emptyInsets() })
+        add(Box.createVerticalGlue(), c.apply { gridy = 5; weighty = 1.0; fill = GridBagConstraints.BOTH; insets = JBUI.emptyInsets() })
     }
 
     // ---- composer --------------------------------------------------------------------------------
@@ -292,6 +309,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private var shownTask: Task? = null
     private var shownEditor: TaskEditor? = null
 
+    /** The linked issues on display, and the groups among them opened past [MAX_LINKS_SHOWN] by "Show all". */
+    private var shownLinks: List<LinkedIssue> = emptyList()
+    private val expandedLinkGroups = mutableSetOf<String>()
+
     /** The comment being rewritten in place, if any. */
     private var editingComment: CommentView? = null
 
@@ -329,6 +350,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         priority: TaskPriority? = null,
         labels: List<TaskLabel> = emptyList(),
         pullRequests: List<LinkedPullRequest> = emptyList(),
+        links: List<LinkedIssue> = emptyList(),
     ) {
         if (task == null) {
             issueUrl = null
@@ -348,6 +370,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             exitDescriptionEdit()
             exitCommentEdit()
             commentField.text = ""
+            expandedLinkGroups.clear()
         }
 
         shownTask = task
@@ -369,6 +392,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         val shownComments = comments ?: task.comments.toList()
         commentsHeading.text = commentsHeadingText(shownComments, loadingComments)
         renderPullRequests(pullRequests)
+        renderLinks(links)
         if (editingComment == null) renderComments(shownComments, loadingComments)
         else pendingComments = shownComments to loadingComments
 
@@ -659,6 +683,60 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             toolTipText = "Open GitLab's Merge Requests tool window"
             border = JBUI.Borders.emptyLeft(8)
         }
+    }
+
+    // ---- linked issues ---------------------------------------------------------------------------
+
+    /**
+     * One block per relation — see [linkGroups] — its caption beside its first issue. A group longer than
+     * [MAX_LINKS_SHOWN] shows that many and a link to the rest, so an epic with fifty issues doesn't push the
+     * comments out of reach.
+     */
+    private fun renderLinks(links: List<LinkedIssue>) {
+        shownLinks = links
+        linksList.removeAll()
+        val c = GridBagConstraints().apply {
+            gridy = 0
+            anchor = GridBagConstraints.WEST
+            insets = JBUI.insetsBottom(4)
+        }
+        for (group in linkGroups(links)) {
+            val expanded = group.title in expandedLinkGroups || group.issues.size <= MAX_LINKS_SHOWN
+            val issues = if (expanded) group.issues else group.issues.take(MAX_LINKS_SHOWN)
+            issues.forEachIndexed { index, issue ->
+                val caption = if (index == 0) group.title else ""
+                addLinkRow(c, JBLabel(caption).apply { foreground = muted() }, linkedIssueLink(issue), issue.status)
+            }
+            if (!expanded) {
+                val more = ActionLink("Show all ${group.issues.size}") {
+                    expandedLinkGroups += group.title
+                    renderLinks(shownLinks)
+                }.apply { font = JBFont.small() }
+                addLinkRow(c, JBLabel(), more, null)
+            }
+        }
+        linksHeading.text = if (links.isEmpty()) "LINKED ISSUES" else "LINKED ISSUES (${links.size})"
+        linksSection.isVisible = links.isNotEmpty()
+        linksSection.revalidate()
+        linksSection.repaint()
+    }
+
+    private fun addLinkRow(c: GridBagConstraints, caption: JComponent, issue: JComponent, status: String?) {
+        c.apply { gridx = 0; weightx = 0.0; fill = GridBagConstraints.NONE; insets = JBUI.insets(0, 0, 4, 12) }
+        linksList.add(caption, c)
+        c.apply { gridx = 1; weightx = 1.0; fill = GridBagConstraints.HORIZONTAL; insets = JBUI.insetsBottom(4) }
+        linksList.add(issue, c)
+        c.apply { gridx = 2; weightx = 0.0; fill = GridBagConstraints.NONE }
+        linksList.add(status?.let { StatusBadge().apply { setStatus(it) } } ?: JBLabel(), c)
+        c.gridy++
+    }
+
+    /** The issue's type icon, then its id and summary as a link that shows it — see [EditRequests.openIssue]. */
+    private fun linkedIssueLink(issue: LinkedIssue): JComponent = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+        isOpaque = false
+        issue.icon?.let { add(JBLabel(it), BorderLayout.WEST) }
+        val text = listOf(issue.id, issue.summary).filter { it.isNotBlank() }.joinToString("  ")
+        add(ActionLink(text) { edits.openIssue(issue) }.apply { toolTipText = issue.url }, BorderLayout.CENTER)
     }
 
     // ---- comment rendering -----------------------------------------------------------------------
@@ -1214,6 +1292,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private companion object {
         const val CARD_EMPTY = "empty"
         const val CARD_TASK = "task"
+
+        /** Linked issues shown per group before "Show all". */
+        const val MAX_LINKS_SHOWN = 5
 
         /** Avatar edge length, scaled. Half of the platform renderer's hardcoded 40. */
         const val AVATAR_SIZE = 20

@@ -88,6 +88,9 @@ are fetched lazily on selection and cached, so the list load never pays for them
   your own highlighted.
 - **Pull requests** lists the pull and merge requests linked to the issue, each with its state and a link to it. For
   GitLab merge requests, *Show in IDE* opens the GitLab plugin's Merge Requests tool window.
+- **Linked issues** (Jira and YouTrack) lists the issue's epic, parent and sub-tasks, then its other links — *blocks*,
+  *is blocked by*, *relates to* — in the tracker's own wording, each with its status. Click one to jump to its row, or
+  to open it in the browser when it isn't in the list. They are read along with the list, so they cost no request.
 
 ### Editing in place
 

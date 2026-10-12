@@ -52,6 +52,29 @@ data class LinkedPullRequest(
     val state: PullRequestState? = null,
 )
 
+/**
+ * Which part of the hierarchy a linked issue is, which decides the group it is shown under and in what order:
+ * the epic and the parent above the task, its sub-tasks below it, then every other kind of link.
+ */
+enum class LinkKind { EPIC, PARENT, SUBTASK, OTHER }
+
+/**
+ * An issue linked to a task. [relation] is the tracker's own wording for an [LinkKind.OTHER] link, read from
+ * the task's side — "blocks", "is blocked by", "relates to"; the other kinds are named by their kind.
+ * [status] is the linked issue's own, null when the tracker doesn't say; [resolved] puts it after the open
+ * ones. [url] opens it in the browser when it isn't in the list.
+ */
+data class LinkedIssue(
+    val kind: LinkKind,
+    val id: String,
+    val summary: String,
+    val relation: String = "",
+    val status: String? = null,
+    val resolved: Boolean = false,
+    val url: String? = null,
+    val icon: Icon? = null,
+)
+
 /** What [TaskEditor.extras] read for one task: fields for the meta row, its priority, its labels. */
 data class TaskExtras(
     val properties: List<TaskProperty> = emptyList(),
@@ -67,6 +90,8 @@ data class TaskExtras(
  * [status] replaces [statusText] when set, [icon] replaces [Task.getIcon], and [properties] join the
  * details pane's meta row ahead of anything [TaskEditor.extras] fetches later. [assignees] and [priority]
  * are what the list is sorted by; null [assignees] means the adapter didn't say, as opposed to nobody.
+ * [links] are the task's linked issues — epic, parent, sub-tasks and the rest — read with the list so that
+ * selecting a task costs no request for them.
  */
 data class TaskDecoration(
     val status: String? = null,
@@ -74,6 +99,7 @@ data class TaskDecoration(
     val properties: List<TaskProperty> = emptyList(),
     val assignees: List<TaskAssignee>? = null,
     val priority: TaskPriority? = null,
+    val links: List<LinkedIssue> = emptyList(),
 )
 
 /**

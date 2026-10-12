@@ -5,7 +5,8 @@
 - A **Tasks** tool window listing the issues from every configured task server in one sortable table, grouped per
   server or as one flat list, with each tracker's own status names shown as coloured badges
 - A details pane showing the issue's description, dates, priority, labels and other fields, its linked pull and merge
-  requests, and its comments with avatars, replies and emoji reactions
+  requests, its linked issues — epic, parent, sub-tasks and other links, for Jira and YouTrack — and its comments
+  with avatars, replies and emoji reactions
 - Issues from every server type Task Management supports, shown with what its connector provides
 - Much more for GitHub, GitLab, Jira and YouTrack: rename issues, edit their descriptions and post comments in place,
   edit your own comments (GitHub, Jira and YouTrack), and see priorities, labels, linked pull requests and each
