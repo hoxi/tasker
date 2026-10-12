@@ -61,6 +61,57 @@ import javax.swing.SwingUtilities
 import javax.swing.Timer
 import javax.swing.tree.DefaultMutableTreeNode
 
+/** One server's list for one closed-issues setting. Identity on the server, like [TaskKey]. */
+private class ListKey(val repository: TaskRepository, val includeClosed: Boolean) {
+    override fun equals(other: Any?): Boolean =
+        other is ListKey && other.repository === repository && other.includeClosed == includeClosed
+
+    override fun hashCode(): Int = 31 * System.identityHashCode(repository) + includeClosed.hashCode()
+}
+
+/** A fetched list: the first [limit] issues the server returned, its decorations, and when it was asked. */
+private data class CachedList(
+    val tasks: List<Task>,
+    val limit: Int,
+    val decorations: Map<String, TaskDecoration>,
+    val fetchedAt: Long,
+) {
+    fun isFresh(): Boolean = System.currentTimeMillis() - fetchedAt < CACHE_TTL_MS
+}
+
+/** A list fetch under way: the limit it asked for, and when it started. Compared by identity. */
+private class ListFetch(val limit: Int, val startedAt: Long)
+
+/** Values per task with when each was stored, so a reader can tell a current one from one to read again. */
+private class TimedCache<V> {
+    private val entries = HashMap<TaskKey, Pair<V, Long>>()
+
+    operator fun get(key: TaskKey): V? = entries[key]?.first
+
+    operator fun set(key: TaskKey, value: V) {
+        entries[key] = value to System.currentTimeMillis()
+    }
+
+    fun isFresh(key: TaskKey): Boolean =
+        entries[key]?.let { System.currentTimeMillis() - it.second < CACHE_TTL_MS } == true
+
+    fun remove(key: TaskKey) {
+        entries.remove(key)
+    }
+
+    fun clear() = entries.clear()
+
+    fun retainServers(servers: Set<TaskRepository>) {
+        entries.keys.removeIf { it.repository !in servers }
+    }
+}
+
+/**
+ * How long anything read from a server counts as current: lists, details, comments, extra fields, linked
+ * pull requests. Older ones are still shown at once, and read again in the background.
+ */
+private const val CACHE_TTL_MS = 5 * 60_000L
+
 /**
  * Tool window content: a multi-column [TreeTable] of tasks (ID / Status / Summary / Updated / Created)
  * with a details pane on the right. Tasks can be grouped per server or shown as one merged list;
@@ -83,7 +134,27 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private val treeTable = SpanningTreeTable(treeModel)
     private val detailsPanel = TaskDetailsPanel(EditHandler())
 
+    /** The servers on display, in the platform's order, as of the last [reload]. EDT-only. */
+    private var servers: List<TaskRepository> = emptyList()
+
+    /** What the tree shows: one group per server in [servers], derived by [redisplay]. EDT-only. */
     private var cache: List<ServerGroup> = emptyList()
+
+    /**
+     * Every server list fetched this session, per server and per closed-issues setting, with when it was
+     * fetched — so toggling Show Closed or lowering the task limit can show a list already held instead
+     * of asking every server again. See [CACHE_TTL_MS] for when a held list is read again. EDT-only.
+     */
+    private val listCache = HashMap<ListKey, CachedList>()
+
+    /** The last failure of each list's fetch, until one succeeds; shown on its server row. EDT-only. */
+    private val listErrors = HashMap<ListKey, String>()
+
+    /** List fetches under way, with the limit each asked for, so a second request doesn't duplicate one. EDT-only. */
+    private val listsInFlight = HashMap<ListKey, ListFetch>()
+
+    /** When Refresh last dropped everything; a fetch started before then is stale on arrival. EDT-only. */
+    private var droppedAt = 0L
 
     /** Where the view settings below are remembered between sessions, per project. */
     private val settings = PropertiesComponent.getInstance(project)
@@ -94,8 +165,6 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var sortColumn: Int? = settings.getInt(SORT_COLUMN_KEY, -1).takeIf { it in columns.indices }
     private var sortAscending: Boolean = settings.getBoolean(SORT_ASCENDING_KEY, true)
 
-    /** Incremented on every (re)load so results from superseded loads can be discarded. */
-    private var loadGeneration: Int = 0
     /** Incremented on every selection so stale lazy detail fetches can be discarded. */
     private var detailRequestId: Int = 0
     /**
@@ -108,9 +177,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Tasks whose details (comments + full description) have already been resolved. Membership *is* the
      * loaded-flag: `TaskRepository.findTask` does no caching of its own (it's abstract, and every
      * implementation issues a live request), and an empty comment list is otherwise indistinguishable
-     * from "not fetched yet". Cleared by [refresh]. EDT-only.
+     * from "not fetched yet". Timestamped, so an entry older than [CACHE_TTL_MS] is shown and read again.
+     * Cleared by a forced [reload]. EDT-only.
      */
-    private val detailCache = HashMap<TaskKey, Task>()
+    private val detailCache = TimedCache<Task>()
 
     /**
      * Adapter-fetched properties, keyed like [detailCache] and cleared alongside it.
@@ -120,10 +190,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * says nothing about the assignee. Only successes land here, so a failed read is retried on the next
      * visit instead of sticking as a permanent blank. EDT-only.
      */
-    private val propertyCache = HashMap<TaskKey, TaskExtras>()
+    private val propertyCache = TimedCache<TaskExtras>()
 
     /** Linked pull and merge requests, keyed and cleared like [propertyCache], and cached only on success. EDT-only. */
-    private val pullRequestCache = HashMap<TaskKey, List<LinkedPullRequest>>()
+    private val pullRequestCache = TimedCache<List<LinkedPullRequest>>()
 
     /**
      * The comments for each task in [detailCache], wherever they came from: the task itself, or the
@@ -134,7 +204,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     /**
      * One [FallbackIcon] per task icon, so repaints reuse the same instance instead of filling the
-     * platform's icon caches with a new wrapper on every paint. Cleared by [refresh]. EDT-only.
+     * platform's icon caches with a new wrapper on every paint. Cleared by a forced [reload]. EDT-only.
      */
     private val taskIcons = HashMap<Icon, Icon>()
 
@@ -142,7 +212,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var loadingLabelTimer: Timer? = null
 
     /** Reloads once the task limit has stopped changing. EDT-only. */
-    private val limitRefreshTimer = Timer(LIMIT_SETTLE_MS) { refresh() }.apply { isRepeats = false }
+    private val limitRefreshTimer = Timer(LIMIT_SETTLE_MS) { reload(force = false) }.apply { isRepeats = false }
 
     /** Pending reads for the selected task, until the selection has settled. EDT-only. */
     private var selectionSettleTimer: Timer? = null
@@ -205,8 +275,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             activated === WindowManager.getInstance().getFrame(project)
         if (disposed || !ours) return@PropertyChangeListener
         val configured = TaskManager.getManager(project).allRepositories
-        val shown = cache.map { it.repository }
-        if (configured.size != shown.size || configured.indices.any { configured[it] !== shown[it] }) refresh()
+        if (configured.size != servers.size || configured.indices.any { configured[it] !== servers[it] }) {
+            reload(force = false) // new server objects have nothing held, so they are read afresh
+        }
     }
 
     init {
@@ -269,7 +340,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         setContent(splitter)
 
         showMessage("Loading…")
-        refresh()
+        reload(force = false)
     }
 
     private fun setColumnWidths() {
@@ -295,7 +366,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
          */
         group.add(object : AnAction("Refresh", "Reload tasks from all configured servers", AllIcons.Actions.Refresh), DumbAware {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
-            override fun actionPerformed(e: AnActionEvent) = refresh()
+            override fun actionPerformed(e: AnActionEvent) = reload(force = true)
         })
         group.add(object : ToggleAction("Group by Server", "Group tasks under their task server", AllIcons.Actions.GroupBy), DumbAware {
             override fun getActionUpdateThread() = ActionUpdateThread.EDT
@@ -312,7 +383,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             override fun setSelected(e: AnActionEvent, state: Boolean) {
                 includeClosed = state
                 settings.setValue(INCLUDE_CLOSED_KEY, state, false)
-                refresh() // closed issues aren't in the cache — refetch from the servers
+                reload(force = false) // a list held for this setting is shown, or fetched
             }
         })
         /*
@@ -371,74 +442,127 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Loads every server in parallel and fills the tree incrementally as each responds, so one slow
-     * server never blocks the others. Configured servers first appear as "loading"; unconfigured ones
-     * are flagged. Results from a superseded load (newer refresh) are discarded via [loadGeneration].
+     * Shows every server's list for the current settings, fetching the ones that need it.
+     *
+     * A list already held for the current closed-issues setting is shown at once, cut down to the task
+     * limit, and read again in the background only if it is older than [CACHE_TTL_MS] or was fetched for
+     * a lower limit. [force] — the Refresh button — drops everything held, task details included, and
+     * reads every server afresh. Servers load in parallel and fill the tree as each answers, so one slow
+     * server never holds up the others.
      */
-    private fun refresh() {
-        val generation = ++loadGeneration
-        val limit = issueLimit
-        val includeClosedNow = includeClosed
-        val repositories = TaskManager.getManager(project).allRepositories.toList()
-        // An explicit refresh means the user wants fresh comments — and a fresh assignee — too.
-        detailCache.clear()
-        propertyCache.clear()
-        pullRequestCache.clear()
-        commentCache.clear()
-        taskIcons.clear()
-
-        // Seed the cache so configured servers show up immediately as "loading".
-        cache = repositories.map { repo ->
-            ServerGroup(repo, emptyList(), if (repo.isConfigured) null else "not configured", loading = repo.isConfigured)
+    private fun reload(force: Boolean) {
+        servers = TaskManager.getManager(project).allRepositories.toList()
+        if (force) {
+            droppedAt = System.currentTimeMillis()
+            listCache.clear()
+            listErrors.clear()
+            detailCache.clear()
+            propertyCache.clear()
+            pullRequestCache.clear()
+            commentCache.clear()
+            taskIcons.clear()
+        } else {
+            forgetRemovedServers()
         }
+
+        for (repo in servers) {
+            if (!repo.isConfigured) continue
+            val held = listCache[ListKey(repo, includeClosed)]
+            val current = held != null && held.limit >= issueLimit && held.isFresh()
+            if (force || !current) loadServer(repo, includeClosed, issueLimit, force)
+        }
+        redisplay()
+    }
+
+    /** Drops what is held for servers no longer configured, whose objects a reconfiguration has replaced. */
+    private fun forgetRemovedServers() {
+        val live = servers.toSet()
+        listCache.keys.removeIf { it.repository !in live }
+        listErrors.keys.removeIf { it.repository !in live }
+        listsInFlight.keys.removeIf { it.repository !in live }
+        for (timed in listOf(detailCache, propertyCache, pullRequestCache)) timed.retainServers(live)
+        commentCache.keys.removeIf { it.repository !in live }
+    }
+
+    /** Rebuilds [cache] from what is held for the current settings, then the tree from that. */
+    private fun redisplay() {
+        cache = servers.map(::groupFor)
         rebuild()
+    }
 
-        for (repo in repositories) {
-            if (repo.isConfigured) loadServer(repo, generation, limit, includeClosedNow)
-        }
+    private fun groupFor(repo: TaskRepository): ServerGroup {
+        if (!repo.isConfigured) return ServerGroup(repo, emptyList(), "not configured")
+        val key = ListKey(repo, includeClosed)
+        val held = listCache[key]
+        return ServerGroup(
+            repo,
+            held?.tasks?.take(issueLimit).orEmpty(),
+            listErrors[key],
+            loading = held == null && key in listsInFlight,
+            decorations = held?.decorations.orEmpty(),
+        )
     }
 
     /**
-     * Fetches one server's list off the EDT and swaps it into [cache], unless a newer refresh has started
-     * since [generation]. [redrawDetails] makes the pane re-render the selected task from the new list
-     * even if the selection itself doesn't change.
+     * Fetches one server's list off the EDT into [listCache], then decorates it.
+     *
+     * A fetch already under way for the same list and at least this limit is left to answer instead,
+     * unless [force]d. A result is kept only if nothing fetched later has landed first, and is shown if
+     * it is for the settings on display by then. A failure keeps whatever list was held, shown with the
+     * error on its row. [redrawDetails] makes the pane re-render the selected task from the new list.
      */
     private fun loadServer(
         repo: TaskRepository,
-        generation: Int,
-        limit: Int,
         includeClosed: Boolean,
+        limit: Int,
+        force: Boolean,
         redrawDetails: Boolean = false,
     ) {
+        val key = ListKey(repo, includeClosed)
+        val running = listsInFlight[key]
+        if (!force && running != null && running.limit >= limit) return
+        val fetch = ListFetch(limit, System.currentTimeMillis())
+        listsInFlight[key] = fetch
+
         AppExecutorUtil.getAppExecutorService().execute {
-            val result = try {
+            val outcome = try {
                 val issues = repo.getIssues(null, 0, limit, includeClosed, EmptyProgressIndicator())
                 /*
                  * Filtered again here, as the platform's own TaskManager does: connectors are asked to leave
                  * closed issues out, but the older ones never see the flag, and not every one honours it.
                  */
-                ServerGroup(repo, issues.filter { includeClosed || !it.isClosed }, null)
+                Result.success(issues.filter { includeClosed || !it.isClosed })
             } catch (ce: ProcessCanceledException) {
+                onEdt { if (listsInFlight[key] === fetch) listsInFlight.remove(key) }
                 return@execute
             } catch (ex: Exception) {
-                ServerGroup(repo, emptyList(), loadFailure(repo, ex))
+                Result.failure(ex)
             }
+            val tasks = outcome.getOrNull()
             onEdt {
-                if (generation != loadGeneration) return@onEdt // superseded by a newer refresh
-                cache = cache.map { if (it.repository === repo) result else it }
+                if (listsInFlight[key] === fetch) listsInFlight.remove(key)
+                val newer = (listCache[key]?.fetchedAt ?: 0) > fetch.startedAt
+                if (newer || fetch.startedAt < droppedAt || repo !in servers) return@onEdt
+                if (tasks != null) {
+                    listCache[key] = CachedList(tasks, limit, emptyMap(), fetch.startedAt)
+                    listErrors.remove(key)
+                } else {
+                    listErrors[key] = loadFailure(repo, outcome.exceptionOrNull() as Exception)
+                }
                 if (redrawDetails) currentDetailKey = null
-                rebuild()
+                redisplay()
             }
-            if (result.tasks.isNotEmpty()) decorate(repo, result.tasks, generation)
+            if (!tasks.isNullOrEmpty()) decorate(repo, key, tasks)
         }
     }
 
     /**
      * Second pass over a server's list, for what [Task] reports wrong or not at all — Jira's real status
      * names and issue-type icons. Runs after the plain list is already on screen, so a slow or failing
-     * adapter costs nothing but the extras. Called on the loading thread.
+     * adapter costs nothing but the extras. Called on the loading thread; the decorations are kept with
+     * the list they were read for, if that is still the one held.
      */
-    private fun decorate(repository: TaskRepository, tasks: List<Task>, generation: Int) {
+    private fun decorate(repository: TaskRepository, key: ListKey, tasks: List<Task>) {
         val editor = TaskEditors.forRepository(repository) ?: return
         val decorations = try {
             editor.decorate(tasks)
@@ -451,16 +575,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         if (decorations.isEmpty()) return
 
         onEdt {
-            if (generation != loadGeneration) return@onEdt
-            cache = cache.map { group ->
-                if (group.repository !== repository) group
-                else ServerGroup(
-                    group.repository, group.tasks, group.error, group.loading, group.decorations + decorations,
-                )
-            }
+            val held = listCache[key]?.takeIf { it.tasks === tasks } ?: return@onEdt
+            listCache[key] = held.copy(decorations = held.decorations + decorations)
             // The pane already shows this task without them; let the reconcile in rebuild() redraw it.
             currentDetailKey = null
-            rebuild()
+            redisplay()
         }
     }
 
@@ -612,6 +731,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 detailCache[key] = it
                 commentCache[key] = it.comments.toList()
             }
+        // Shown however old; read again below, quietly, once older than CACHE_TTL_MS.
+        val current = resolved != null && detailCache.isFresh(key)
         showDetails(resolved ?: task, repository, key, loadingComments = false)
         if (resolved == null) {
             /*
@@ -637,7 +758,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             if (requestId != detailRequestId) return@Timer
             loadExtraProperties(task, repository, key, requestId)
             loadPullRequests(task, repository, key, requestId)
-            if (resolved == null) loadDetails(task, repository, key, requestId)
+            if (!current) loadDetails(task, repository, key, requestId)
         }.apply {
             isRepeats = false
             start()
@@ -673,7 +794,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (requestId != detailRequestId) return@onEdt // selection moved on; its own timer now owns the pane
                 cancelLoadingLabel()
                 showingLoadingComments = false
-                showDetails(full ?: task, repository, key, loadingComments = false)
+                // A failed re-read leaves what was held on screen rather than falling back to the list's copy.
+                showDetails(full ?: detailCache[key] ?: task, repository, key, loadingComments = false)
             }
         }
     }
@@ -780,13 +902,14 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Asks the provider adapter for fields [Task] has no room for, once per task per refresh.
+     * Asks the provider adapter for fields [Task] has no room for, again once what is held is older than
+     * [CACHE_TTL_MS].
      *
      * Runs alongside the comment fetch rather than after it: the two are independent reads, and chaining
      * them would make the assignee wait on comments it has nothing to do with.
      */
     private fun loadExtraProperties(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
-        if (propertyCache.containsKey(key)) return
+        if (propertyCache.isFresh(key)) return
         val editor = TaskEditors.forRepository(repository) ?: return
 
         AppExecutorUtil.getAppExecutorService().execute {
@@ -809,12 +932,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Asks the adapter for linked pull and merge requests, once per task per refresh, alongside the other
-     * detail reads. A failure is logged rather than shown: for Jira this rides on an unofficial API, and
+     * Asks the adapter for linked pull and merge requests, again once older than [CACHE_TTL_MS], alongside
+     * the other detail reads. A failure is logged rather than shown: for Jira this rides on an unofficial API, and
      * a missing section is the honest outcome when it doesn't answer.
      */
     private fun loadPullRequests(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
-        if (pullRequestCache.containsKey(key)) return
+        if (pullRequestCache.isFresh(key)) return
         val editor = TaskEditors.forRepository(repository) ?: return
 
         AppExecutorUtil.getAppExecutorService().execute {
@@ -1108,26 +1231,27 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
              * list is then the only place the change shows, so that server is read again. Not after a
              * failed re-read, though — on a flaky connection that would trade the list for an error.
              */
-            if (!rereadFailed) loadServer(repository, loadGeneration, issueLimit, includeClosed, redrawDetails = true)
+            if (!rereadFailed) {
+                loadServer(repository, includeClosed, issueLimit, force = true, redrawDetails = true)
+            }
             return
         }
 
-        cache = cache.map { group ->
-            if (group.repository !== repository || group.tasks.none { it.id == taskId }) {
-                group
-            } else {
-                ServerGroup(
-                    group.repository,
-                    group.tasks.map { if (it.id == taskId) refreshed else it },
-                    group.error,
-                    group.loading,
-                    group.decorations + decorations,
-                )
-            }
+        /*
+         * Into every list held for this server, with and without closed issues: both may hold the task. A
+         * task the write just closed leaves the list of open ones, as a fresh fetch would leave it out.
+         */
+        for (key in listCache.keys.filter { it.repository === repository }) {
+            val held = listCache.getValue(key)
+            if (held.tasks.none { it.id == taskId }) continue
+            val tasks = held.tasks
+                .map { if (it.id == taskId) refreshed else it }
+                .filter { key.includeClosed || !it.isClosed }
+            listCache[key] = held.copy(tasks = tasks, decorations = held.decorations + decorations)
         }
         // The selection hasn't moved, so clear the guard or the pane would decline to re-render.
         currentDetailKey = null
-        rebuild()
+        redisplay()
     }
 
     private fun notifyFailure(action: String, error: Exception) {
