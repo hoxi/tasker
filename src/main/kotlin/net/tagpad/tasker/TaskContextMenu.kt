@@ -18,21 +18,21 @@ import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 
 /**
- * One row of the task context menu: switching to the task, a state it can move to, or an explanation of
- * why there is nothing to pick.
+ * One row of the task context menu: something to do with the task — switch to it, edit it — a state it can
+ * move to, or an explanation of why there is nothing to pick.
  *
  * Folding the "can't" cases into the list itself — unsupported provider, no states, failed fetch —
  * means a right-click always produces visible feedback rather than silently doing nothing.
  */
 sealed interface TaskMenuItem {
-    data class Switch(val label: String) : TaskMenuItem
+    class Action(val label: String, val run: () -> Unit) : TaskMenuItem
     data class State(val state: CustomTaskState) : TaskMenuItem
     data class Message(val text: String) : TaskMenuItem
 }
 
 /**
- * Shows the task menu at [at]: switching to the task first, then the states it can move to under a
- * caption of their own.
+ * Shows the task menu at [at]: what can be done with the task first, then the states it can move to under
+ * a caption of their own.
  *
  * [currentStatus] is preselected when it matches one of the offered states, so the popup opens on where
  * the task is now. Picking a [TaskMenuItem.Message] does nothing.
@@ -41,7 +41,6 @@ fun showTaskContextMenu(
     items: List<TaskMenuItem>,
     currentStatus: String?,
     at: RelativePoint,
-    onSwitch: () -> Unit,
     onStateChosen: (CustomTaskState) -> Unit,
 ) {
     val builder = JBPopupFactory.getInstance()
@@ -49,7 +48,7 @@ fun showTaskContextMenu(
         .setRenderer(TaskItemRenderer(items))
         .setItemChosenCallback { item ->
             when (item) {
-                is TaskMenuItem.Switch -> onSwitch()
+                is TaskMenuItem.Action -> item.run()
                 is TaskMenuItem.State -> onStateChosen(item.state)
                 is TaskMenuItem.Message -> Unit
             }
@@ -71,8 +70,8 @@ fun showTaskContextMenu(
  */
 private class TaskItemRenderer(items: List<TaskMenuItem>) : ListCellRenderer<TaskMenuItem> {
 
-    /** The row the caption belongs above: the first non-switch one, as long as something precedes it. */
-    private val captionIndex = items.indexOfFirst { it !is TaskMenuItem.Switch }.takeIf { it > 0 }
+    /** The row the caption belongs above: the first that isn't an action, as long as something precedes it. */
+    private val captionIndex = items.indexOfFirst { it !is TaskMenuItem.Action }.takeIf { it > 0 }
 
     private val plainRow = RowWidgets()
 
@@ -127,12 +126,12 @@ private class TaskItemRenderer(items: List<TaskMenuItem>) : ListCellRenderer<Tas
             border = JBUI.Borders.empty(6, 10)
         }
 
-        private val switchLabel = JBLabel().apply {
+        private val actionLabel = JBLabel().apply {
             border = JBUI.Borders.empty(6, 10)
         }
 
         fun render(value: TaskMenuItem, list: JList<out TaskMenuItem>, isSelected: Boolean): Component = when (value) {
-            is TaskMenuItem.Switch -> switchLabel.also {
+            is TaskMenuItem.Action -> actionLabel.also {
                 it.text = value.label
                 it.isOpaque = true
                 it.background = if (isSelected) list.selectionBackground else list.background
