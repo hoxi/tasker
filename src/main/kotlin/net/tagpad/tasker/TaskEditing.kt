@@ -1,5 +1,6 @@
 package net.tagpad.tasker
 
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.tasks.Comment
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
@@ -85,6 +86,22 @@ data class TaskExtras(
 }
 
 /**
+ * What [TaskEditor.details] read for one task, each part succeeding or failing on its own: a failed comment
+ * read mustn't cost the fields beside it, nor the other way round.
+ */
+class TaskDetails(val extras: Result<TaskExtras>, val comments: Result<List<Comment>>)
+
+/** [block]'s result, or its failure — bar a cancellation, which has to keep unwinding. */
+internal inline fun <T> attempt(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (ce: ProcessCanceledException) {
+        throw ce
+    } catch (ex: Exception) {
+        Result.failure(ex)
+    }
+
+/**
  * What a row shows that [Task] gets wrong or leaves out, resolved for a whole list at once.
  *
  * [status] replaces [statusText] when set, [icon] replaces [Task.getIcon], and [properties] join the
@@ -157,6 +174,22 @@ interface TaskEditor {
      */
     @Throws(Exception::class)
     fun extras(task: Task): TaskExtras = TaskExtras()
+
+    /**
+     * Whether [details] reads [extras] and [comments] in one request, so the pane should ask for them
+     * together rather than separately and side by side. Answerable without the network.
+     */
+    val readsDetailsAtOnce: Boolean get() = false
+
+    /**
+     * [extras] and the task's comments, for a provider that can read both at once — see [readsDetailsAtOnce].
+     * The default reads them one after the other, which is only right where nothing better exists; the pane
+     * doesn't call it then. The comments are [comments], or the task's own when that is null.
+     *
+     * Hits the network, so call it off the EDT.
+     */
+    fun details(task: Task): TaskDetails =
+        TaskDetails(attempt { extras(task) }, attempt { comments(task) ?: task.comments.toList() })
 
     /**
      * Pull and merge requests linked to the task, in the order the tracker lists them. A request of its

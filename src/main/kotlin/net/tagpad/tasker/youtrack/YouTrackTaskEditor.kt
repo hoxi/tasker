@@ -17,10 +17,12 @@ import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.ReactableComment
 import net.tagpad.tasker.TaskAssignee
 import net.tagpad.tasker.TaskDecoration
+import net.tagpad.tasker.TaskDetails
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
 import net.tagpad.tasker.TaskLabel
 import net.tagpad.tasker.TaskPriority
+import net.tagpad.tasker.attempt
 import net.tagpad.tasker.baseUrlOrNull
 import net.tagpad.tasker.basicAuth
 import net.tagpad.tasker.credentialsOrNull
@@ -72,13 +74,29 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * `textPreview` is YouTrack's own HTML rendering of the markdown, which is what the pane expects a
      * comment body to be; the raw `text` is only the fallback, escaped.
      */
-    override fun comments(task: Task): List<Comment> {
-        val fields = "id,text,textPreview,created,deleted,author(id,fullName,login,avatarUrl)," +
-            "reactions(reaction,author(id))"
+    override fun comments(task: Task): List<Comment> =
+        commentsFrom(readJsonObjects("${requireEndpoint(task)}/comments?fields=$COMMENT_FIELDS", headers()))
+
+    private fun commentsFrom(comments: List<JsonObject>): List<Comment> {
         val me = currentUser()
-        return readJsonObjects("${requireEndpoint(task)}/comments?fields=$fields", headers())
+        return comments
             .filterNot { it.get("deleted")?.takeIf { d -> d.isJsonPrimitive }?.asBoolean == true }
             .map { YouTrackComment(it, me) }
+    }
+
+    override val readsDetailsAtOnce: Boolean get() = true
+
+    /** [extras] and the comments in one request: the issue, with both asked for as its fields. */
+    override fun details(task: Task): TaskDetails {
+        val issue = readJsonObject("${requireEndpoint(task)}?fields=$EXTRA_FIELDS,comments($COMMENT_FIELDS)", headers())
+        return TaskDetails(
+            extras = attempt { extrasFrom(issue) },
+            comments = attempt {
+                val comments = issue.get("comments")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?: error("${task.presentableId} came without its comments")
+                commentsFrom(comments.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject })
+            },
+        )
     }
 
     /**
@@ -88,11 +106,10 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
      * [Task.getCustomProperties], and the pane shows those already. Priority is among them, but only as
      * text; read here it comes with its colour, which stands in for an icon — YouTrack draws none.
      */
-    override fun extras(task: Task): TaskExtras {
-        val fields = "customFields(name,value(name,color(background,foreground)))," +
-            "tags(name,color(background,foreground))"
-        val issue = readJsonObject("${endpoint(task) ?: return TaskExtras()}?fields=$fields", headers())
+    override fun extras(task: Task): TaskExtras =
+        extrasFrom(readJsonObject("${endpoint(task) ?: return TaskExtras()}?fields=$EXTRA_FIELDS", headers()))
 
+    private fun extrasFrom(issue: JsonObject): TaskExtras {
         val priority = issue.get("customFields")?.takeIf { it.isJsonArray }?.asJsonArray
             ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
             ?.firstOrNull { it.stringOrEmpty("name").equals("Priority", ignoreCase = true) }
@@ -354,6 +371,14 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         endpoint(task) ?: error("${task.presentableId} cannot be addressed on ${repository.presentableName}")
 
     private companion object {
+        /** What [extras] reads of an issue. */
+        const val EXTRA_FIELDS = "customFields(name,value(name,color(background,foreground)))," +
+            "tags(name,color(background,foreground))"
+
+        /** What a comment is read with. */
+        const val COMMENT_FIELDS = "id,text,textPreview,created,deleted,author(id,fullName,login,avatarUrl)," +
+            "reactions(reaction,author(id))"
+
         /** Issues looked up per search when decorating a list. */
         const val PAGE_SIZE = 50
 
