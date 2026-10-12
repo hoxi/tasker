@@ -13,6 +13,8 @@ import com.intellij.util.io.HttpRequests
 import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.EditableComment
 import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.LinkKind
+import net.tagpad.tasker.LinkedIssue
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.TaskDecoration
@@ -246,38 +248,138 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
     }
 
     /**
-     * Status, issue type, assignee and priority for the whole list, a page of keys per request.
+     * Status, issue type, assignee, priority and linked issues for the whole list, a page of keys per request.
      *
      * The status is the workflow's own name — "In Review", "Selected for Development" — which `JiraTask`
      * squeezes into [com.intellij.tasks.TaskState] by numeric id. Ids are per-site on Cloud, so most
      * statuses there come out as OTHER and would be shown as plain "Open". Assignee and priority ride
-     * along in the same request, for sorting the list by them.
+     * along in the same request, for sorting the list by them, and so do the links, so that selecting a
+     * task costs no request for them.
+     *
+     * The epic comes from `parent` on Cloud. Server and Data Center keep it in the "Epic Link" custom field
+     * instead, which holds only the epic's key: epics not in the list themselves are looked up afterwards,
+     * in one search per page of them.
      */
     override fun decorate(tasks: List<Task>): Map<String, TaskDecoration> {
         val base = apiBase() ?: return emptyMap()
         val keys = tasks.map { it.id }.filter { KEY.matches(it) }.distinct()
         if (keys.isEmpty() || repository.credentialsOrNull() == null) return emptyMap()
 
-        // Cloud retired /search in favour of /search/jql; Server and Data Center only have the former.
-        val searchUrl = if (isCloud()) "$base/search/jql" else "$base/search"
         val me = currentUser()
         val ranks = priorityRanks(base)
-        val result = HashMap<String, TaskDecoration>()
+        val epicField = if (isCloud()) null else epicLinkField(base)
+        val fields = "summary,status,issuetype,assignee,priority,parent,subtasks,issuelinks" +
+            (epicField?.let { ",$it" } ?: "")
+        val found = HashMap<String, JsonObject>()
         for (page in keys.chunked(PAGE_SIZE)) {
-            val jql = URLEncoder.encode("key in (${page.joinToString(",")})", StandardCharsets.UTF_8)
-            val url = "$searchUrl?jql=$jql&fields=status,issuetype,assignee,priority&maxResults=${page.size}"
-            val response = readJsonObject(url, headers())
-            val issues = response.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
-            for (element in issues) {
-                val issue = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            for (issue in search(base, "key in (${page.joinToString(",")})", fields, page.size)) {
                 val key = issue.stringOrEmpty("key").takeIf { it.isNotBlank() } ?: continue
-                result[key] = decoration(issue.objectOrNull("fields") ?: continue, me, ranks)
+                found[key] = issue
             }
+        }
+
+        val epicKeys = found.mapValues { (_, issue) ->
+            epicField?.let { issue.objectOrNull("fields")?.stringOrEmpty(it) }?.takeIf { KEY.matches(it) }
+        }
+        val epics = epicIssues(base, epicKeys.values.filterNotNull().toSet(), found)
+        return found.mapValues { (key, issue) ->
+            val epic = epicKeys[key]?.let { epics[it] }
+            decoration(issue.objectOrNull("fields") ?: JsonObject(), me, ranks, listOfNotNull(epic))
+        }
+    }
+
+    /** The issues [jql] finds, with [fields]. Cloud retired `/search` for `/search/jql`; the others only have it. */
+    private fun search(base: String, jql: String, fields: String, max: Int): List<JsonObject> {
+        val searchUrl = if (isCloud()) "$base/search/jql" else "$base/search"
+        val query = URLEncoder.encode(jql, StandardCharsets.UTF_8)
+        val response = readJsonObject("$searchUrl?jql=$query&fields=$fields&maxResults=$max", headers())
+        return response.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            .orEmpty()
+    }
+
+    /**
+     * The epics named by [keys], as links: from [known] when the epic is in the list itself, otherwise read
+     * in one search per page of them. An epic that can't be read is left out, rather than failing the list's
+     * decorations with it.
+     */
+    private fun epicIssues(base: String, keys: Set<String>, known: Map<String, JsonObject>): Map<String, LinkedIssue> {
+        val result = HashMap<String, LinkedIssue>()
+        keys.forEach { key -> known[key]?.let { result[key] = linkedIssue(LinkKind.EPIC, it) } }
+        for (page in (keys - result.keys).chunked(PAGE_SIZE)) {
+            val issues = runCatching { search(base, "key in (${page.joinToString(",")})", LINKED_FIELDS, page.size) }
+                .onFailure { LOG.info("Could not read epics from ${repository.presentableName}", it) }
+                .getOrDefault(emptyList())
+            for (issue in issues) result[issue.stringOrEmpty("key")] = linkedIssue(LinkKind.EPIC, issue)
         }
         return result
     }
 
-    private fun decoration(fields: JsonObject, me: String?, ranks: Map<String, Int>): TaskDecoration {
+    /**
+     * The id of the site's "Epic Link" field — `customfield_10008`, or whatever this site gave it — found by
+     * the Jira Software type it was created with rather than by its name, which sites translate and rename.
+     * Read once per site and session; null on a site without Jira Software, or when it can't be read.
+     */
+    private fun epicLinkField(base: String): String? = EPIC_LINK_FIELDS.getOrPut(base) {
+        val id = runCatching {
+            readJsonObjects("$base/field", headers())
+                .firstOrNull { it.objectOrNull("schema")?.stringOrEmpty("custom") == EPIC_LINK_TYPE }
+                ?.idOrEmpty("id")?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+        Optional.ofNullable(id)
+    }.orElse(null)
+
+    /**
+     * Everything linked to the issue whose [fields] these are: any [epics] found for it elsewhere, its parent
+     * — the epic, on Cloud, when the parent's type sits a level above standard issues — its sub-tasks, and its
+     * issue links, each in the wording of its direction as seen from this issue.
+     */
+    private fun links(fields: JsonObject, epics: List<LinkedIssue>): List<LinkedIssue> = buildList {
+        addAll(epics)
+        fields.objectOrNull("parent")?.let { parent ->
+            val type = parent.objectOrNull("fields")?.objectOrNull("issuetype")
+            val level = type?.get("hierarchyLevel")?.asIntOrNull() ?: 0
+            val isEpic = level > 0 || type?.stringOrEmpty("name").equals("Epic", ignoreCase = true)
+            add(linkedIssue(if (isEpic) LinkKind.EPIC else LinkKind.PARENT, parent))
+        }
+        fields.get("subtasks")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.forEach { add(linkedIssue(LinkKind.SUBTASK, it)) }
+        fields.get("issuelinks")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.forEach { link ->
+                val type = link.objectOrNull("type")
+                val outward = link.objectOrNull("outwardIssue")
+                val other = outward ?: link.objectOrNull("inwardIssue") ?: return@forEach
+                val wording = type?.stringOrEmpty(if (outward != null) "outward" else "inward")
+                    ?.ifBlank { type.stringOrEmpty("name") }.orEmpty()
+                add(linkedIssue(LinkKind.OTHER, other, wording))
+            }
+    }
+
+    /** A linked issue as Jira nests one: its key, and a `fields` object with summary, status and type. */
+    private fun linkedIssue(kind: LinkKind, issue: JsonObject, relation: String = ""): LinkedIssue {
+        val key = issue.stringOrEmpty("key")
+        val fields = issue.objectOrNull("fields")
+        val status = fields?.objectOrNull("status")
+        return LinkedIssue(
+            kind = kind,
+            id = key,
+            summary = fields?.stringOrEmpty("summary").orEmpty(),
+            relation = relation,
+            status = status?.stringOrEmpty("name")?.takeIf { it.isNotBlank() },
+            resolved = status?.objectOrNull("statusCategory")?.stringOrEmpty("key") == "done",
+            url = repository.baseUrlOrNull()?.let { "$it/browse/$key" },
+            icon = fields?.objectOrNull("issuetype")?.stringOrEmpty("iconUrl")?.let(::icon),
+        )
+    }
+
+    private fun decoration(
+        fields: JsonObject,
+        me: String?,
+        ranks: Map<String, Int>,
+        epics: List<LinkedIssue>,
+    ): TaskDecoration {
         val type = fields.objectOrNull("issuetype")
         val assignee = fields.objectOrNull("assignee")
         val priority = fields.objectOrNull("priority")
@@ -292,6 +394,7 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
             priority = priority?.stringOrEmpty("name")?.takeIf { it.isNotBlank() }?.let { name ->
                 TaskPriority(name, icon(priority.stringOrEmpty("iconUrl")), ranks[priority.idOrEmpty("id")])
             },
+            links = links(fields, epics),
         )
     }
 
@@ -437,6 +540,15 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         /** Priority order per site, keyed by API base; see [priorityRanks]. */
         val PRIORITY_RANKS = ConcurrentHashMap<String, Map<String, Int>>()
+
+        /** The "Epic Link" field's id per site, keyed by API base; see [epicLinkField]. */
+        val EPIC_LINK_FIELDS = ConcurrentHashMap<String, Optional<String>>()
+
+        /** The custom field type Jira Software creates "Epic Link" with, on Server and Data Center. */
+        const val EPIC_LINK_TYPE = "com.pyxis.greenhopper.jira:gh-epic-link"
+
+        /** What a linked issue is shown with. */
+        const val LINKED_FIELDS = "summary,status,issuetype"
     }
 }
 

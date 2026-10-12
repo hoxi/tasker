@@ -1,6 +1,7 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.BrowserUtil
 import com.intellij.ide.ui.LafManagerListener
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
@@ -795,12 +796,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Selects the row for [taskId] on [repository], so a rebuild keeps the selection where it was.
+     * Selects the row for [taskId] on [repository], so a rebuild keeps the selection where it was; false when
+     * the list has no such row.
      *
      * The server is matched by identity first, since two servers can share both a url and task ids. A
      * reconfiguration replaces every server object, though, so failing that the url stands in for it.
      */
-    private fun reselectTask(repository: TaskRepository, taskId: String) {
+    private fun reselectTask(repository: TaskRepository, taskId: String): Boolean {
         val tree = treeTable.tree
         val rows = (0 until tree.rowCount).mapNotNull { row ->
             val node = (tree.getPathForRow(row)?.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? TaskNode
@@ -808,8 +810,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
         val row = rows.firstOrNull { it.second === repository }?.first
             ?: rows.firstOrNull { it.second.url == repository.url }?.first
-            ?: return
+            ?: return false
         treeTable.selectionModel.setSelectionInterval(row, row)
+        return true
     }
 
     /**
@@ -974,6 +977,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             priority = propertyCache[key]?.priority,
             labels = propertyCache[key]?.labels.orEmpty(),
             pullRequests = pullRequestCache[key].orEmpty(),
+            links = decorationFor(repository, task.id)?.links.orEmpty(),
         )
     }
 
@@ -1233,6 +1237,20 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         override fun saveComment(comment: Comment, text: String) =
             write("Updating comment…") { editor, task -> editor.editComment(task, comment, text) }
+
+        /**
+         * Selects the linked issue's row when the list has it — on the same server, since ids are only unique
+         * per server — and scrolls to it; otherwise opens it in the browser, closed issues included when the
+         * list leaves those out.
+         */
+        override fun openIssue(issue: LinkedIssue) {
+            val repository = selectedTaskNode()?.repository
+            if (repository != null && reselectTask(repository, issue.id)) {
+                treeTable.scrollRectToVisible(treeTable.getCellRect(treeTable.selectedRow, 0, true))
+                return
+            }
+            issue.url?.let(BrowserUtil::browse)
+        }
     }
 
     /** Resolves the selection and its adapter, then hands the write off to [applyWrite]. */

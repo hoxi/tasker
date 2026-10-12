@@ -11,6 +11,8 @@ import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.CommentReaction
 import net.tagpad.tasker.EditableComment
 import net.tagpad.tasker.JSON_CONTENT_TYPE
+import net.tagpad.tasker.LinkKind
+import net.tagpad.tasker.LinkedIssue
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.ReactableComment
 import net.tagpad.tasker.TaskAssignee
@@ -116,15 +118,17 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
     }
 
     /**
-     * Who each listed issue is assigned to and how urgent it is, for sorting the list by them, in one search
-     * per page of issues. A priority's rank is its ordinal in the field's value bundle, which is the order
-     * YouTrack itself lists them in — most urgent first in the default bundle.
+     * Who each listed issue is assigned to and how urgent it is, for sorting the list by them, and what it is
+     * linked to, in one search per page of issues. A priority's rank is its ordinal in the field's value
+     * bundle, which is the order YouTrack itself lists them in — most urgent first in the default bundle.
      */
     override fun decorate(tasks: List<Task>): Map<String, TaskDecoration> {
         val base = repository.baseUrlOrNull() ?: return emptyMap()
         if (repository.credentialsOrNull() == null) return emptyMap()
         val me = currentUser()
-        val fields = "idReadable,customFields(name,value(name,fullName,login,id,ordinal,color(background)))"
+        val fields = "idReadable,customFields(name,value(name,fullName,login,id,ordinal,color(background)))," +
+            "links(direction,linkType(name,sourceToTarget,targetToSource)," +
+            "issues(idReadable,summary,resolved,customFields(name,value(name))))"
         val result = HashMap<String, TaskDecoration>()
         for (page in tasks.map { it.id }.filter(String::isNotBlank).distinct().chunked(PAGE_SIZE)) {
             val query = URLEncoder.encode("issue id: ${page.joinToString(", ")}", StandardCharsets.UTF_8)
@@ -164,8 +168,56 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
                     ?.let { TaskAssignee(it, isMe = me != null && user.idOrEmpty("id") == me) }
             },
             priority = priority,
+            links = links(issue),
         )
     }
+
+    /**
+     * The issues [issue] is linked to, each link worded from its side: an outward link in the link type's
+     * source-to-target wording, an inward one in its target-to-source wording, and an undirected one — which
+     * YouTrack reports as BOTH — in the only wording it has. The built-in "Subtask" type is the hierarchy:
+     * outward it lists the sub-tasks, inward the parent.
+     */
+    private fun links(issue: JsonObject): List<LinkedIssue> {
+        val base = repository.baseUrlOrNull()
+        return issue.get("links")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            .orEmpty()
+            .flatMap { link ->
+                val type = link.objectOrNull("linkType")
+                val inward = link.stringOrEmpty("direction") == "INWARD"
+                val wording = type?.stringOrEmpty(if (inward) "targetToSource" else "sourceToTarget")
+                    ?.ifBlank { type.stringOrEmpty("name") }.orEmpty()
+                val kind = when {
+                    !type?.stringOrEmpty("name").equals("Subtask", ignoreCase = true) -> LinkKind.OTHER
+                    inward -> LinkKind.PARENT
+                    else -> LinkKind.SUBTASK
+                }
+                link.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+                    .orEmpty()
+                    .mapNotNull { other ->
+                        val id = other.stringOrEmpty("idReadable").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                        LinkedIssue(
+                            kind = kind,
+                            id = id,
+                            summary = other.stringOrEmpty("summary"),
+                            relation = if (kind == LinkKind.OTHER) wording else "",
+                            status = stateOf(other),
+                            // A resolved issue carries the time it was resolved; an open one null.
+                            resolved = other.get("resolved")?.takeIf { !it.isJsonNull } != null,
+                            url = base?.let { "$it/issue/$id" },
+                        )
+                    }
+            }
+    }
+
+    /** The value of the issue's "State" field, which is YouTrack's status in the default workflow. */
+    private fun stateOf(issue: JsonObject): String? =
+        issue.get("customFields")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.firstOrNull { it.stringOrEmpty("name").equals("State", ignoreCase = true) }
+            ?.objectOrNull("value")?.stringOrEmpty("name")?.takeIf { it.isNotBlank() }
 
     override fun canEditComment(task: Task, comment: Comment): Boolean =
         (comment as? YouTrackComment)?.isMine == true && endpoint(task) != null
