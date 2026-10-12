@@ -1,18 +1,43 @@
 package net.tagpad.tasker
 
-import com.intellij.openapi.util.text.StringUtil
 import com.intellij.tasks.Task
 import com.intellij.tasks.TaskRepository
 import com.intellij.tasks.TaskState
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
 import com.intellij.util.text.DateFormatUtil
 import com.intellij.util.ui.ColumnInfo
+import net.tagpad.tasker.sort.SortField
+import net.tagpad.tasker.sort.SortFields
+import net.tagpad.tasker.sort.SortPerson
+import net.tagpad.tasker.sort.SortPriority
+import net.tagpad.tasker.sort.SortableRow
 import java.util.Date
 import javax.swing.tree.DefaultMutableTreeNode
 
 /** User objects carried by the tree nodes. */
 internal class ServerNode(val repository: TaskRepository, val error: String?, val loading: Boolean = false)
-internal class TaskNode(val task: Task, val repository: TaskRepository, val decoration: TaskDecoration? = null)
+/**
+ * A task row: the task, its server, and what its adapter added. Sortable through [SortableRow], whose
+ * values it reads from the task and, for what [Task] has no room for, from the [decoration].
+ */
+internal class TaskNode(
+    val task: Task,
+    val repository: TaskRepository,
+    val decoration: TaskDecoration? = null,
+) : SortableRow {
+    override val id: String get() = task.presentableId
+    override val summary: String get() = task.summary.orEmpty()
+    override val status: String get() = statusText(task, decoration)
+    override val created: Date? get() = task.created
+    override val updated: Date? get() = task.updated
+    override val serverName: String get() = repository.presentableName.orEmpty()
+
+    override val assignees: List<SortPerson>
+        get() = decoration?.assignees.orEmpty().map { SortPerson(it.name, it.isMe) }
+
+    override val priority: SortPriority?
+        get() = decoration?.priority?.let { p -> p.rank?.let { SortPriority(p.name, it) } }
+}
 
 internal fun DefaultMutableTreeNode.task(): Task? = (userObject as? TaskNode)?.task
 
@@ -48,29 +73,10 @@ private fun trackerStateName(task: Task): String? =
 /** A date and time in the IDE's own format, as set under Settings | Appearance & Behavior | System Settings. */
 internal fun formatDate(date: Date?): String = date?.let(DateFormatUtil::formatDateTime).orEmpty()
 
-/** Compare two nodes by a task date, nulls (and non-task nodes) last. */
-private fun byDate(extract: (Task) -> Date?): Comparator<DefaultMutableTreeNode> =
-    Comparator { a, b ->
-        val da = a.task()?.let(extract)
-        val db = b.task()?.let(extract)
-        when {
-            da == null && db == null -> 0
-            da == null -> 1
-            db == null -> -1
-            else -> da.compareTo(db)
-        }
-    }
-
-private fun byString(extract: (Task) -> String?): Comparator<DefaultMutableTreeNode> =
-    Comparator { a, b ->
-        StringUtil.naturalCompare(a.task()?.let(extract) ?: "", b.task()?.let(extract) ?: "")
-    }
-
 /** ID column — this is the tree column (holds the expand handles and per-server grouping). */
 private class IdColumn : ColumnInfo<DefaultMutableTreeNode, Any>("ID") {
     override fun valueOf(item: DefaultMutableTreeNode): Any = item
     override fun getColumnClass(): Class<*> = TreeTableModel::class.java
-    override fun getComparator(): Comparator<DefaultMutableTreeNode> = byString { it.presentableId }
 }
 
 private class StatusColumn : ColumnInfo<DefaultMutableTreeNode, String>("Status") {
@@ -79,28 +85,30 @@ private class StatusColumn : ColumnInfo<DefaultMutableTreeNode, String>("Status"
      * TableView) does not consult ColumnInfo.getRenderer.
      */
     override fun valueOf(item: DefaultMutableTreeNode): String = item.statusText()
-    override fun getComparator(): Comparator<DefaultMutableTreeNode> =
-        Comparator { a, b -> StringUtil.naturalCompare(a.statusText(), b.statusText()) }
 }
 
 private class SummaryColumn : ColumnInfo<DefaultMutableTreeNode, String>("Summary") {
     override fun valueOf(item: DefaultMutableTreeNode): String = item.task()?.summary ?: ""
-    override fun getComparator(): Comparator<DefaultMutableTreeNode> = byString { it.summary }
 }
 
 private class UpdatedColumn : ColumnInfo<DefaultMutableTreeNode, String>("Updated") {
     override fun valueOf(item: DefaultMutableTreeNode): String = formatDate(item.task()?.updated)
-    override fun getComparator(): Comparator<DefaultMutableTreeNode> = byDate { it.updated }
 }
 
 private class CreatedColumn : ColumnInfo<DefaultMutableTreeNode, String>("Created") {
     override fun valueOf(item: DefaultMutableTreeNode): String = formatDate(item.task()?.created)
-    override fun getComparator(): Comparator<DefaultMutableTreeNode> = byDate { it.created }
 }
 
 /** Column order: ID (tree), Status, Summary, Updated, Created. */
 internal fun taskerColumns(): Array<ColumnInfo<DefaultMutableTreeNode, *>> =
     arrayOf(IdColumn(), StatusColumn(), SummaryColumn(), UpdatedColumn(), CreatedColumn())
+
+/** The field each column sorts by, by model index, in [taskerColumns]' order. */
+private val COLUMN_SORT_FIELDS: List<SortField<*>> =
+    listOf(SortFields.ID, SortFields.STATUS, SortFields.SUMMARY, SortFields.UPDATED, SortFields.CREATED)
+
+/** The field a click on the column at [modelIndex] sorts by, or null for a column that doesn't sort. */
+internal fun sortFieldForColumn(modelIndex: Int): SortField<*>? = COLUMN_SORT_FIELDS.getOrNull(modelIndex)
 
 /**
  * One task on one server. Ids are only unique within a server, so the server is part of the key — the

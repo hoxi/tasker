@@ -6,6 +6,8 @@ import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
+import net.tagpad.tasker.sort.SortDirection
+import net.tagpad.tasker.sort.SortIndicator
 import java.awt.Component
 import java.awt.Graphics
 import java.awt.Rectangle
@@ -110,11 +112,15 @@ internal class IdCellRenderer(
     }
 }
 
-/** Wraps the default header renderer to draw an up/down arrow on the column [sortColumn] names. */
+/**
+ * Wraps the default header renderer to show where each column sits in the sort: an arrow for its direction,
+ * and — when several columns sort at once — its place among them, as "Updated 2".
+ *
+ * [indicator] answers for a column by model index; the renderer doesn't know how the sort is held.
+ */
 internal class SortableHeaderRenderer(
     private val delegate: TableCellRenderer,
-    private val sortColumn: () -> Int?,
-    private val ascending: () -> Boolean,
+    private val indicator: (modelColumn: Int) -> SortIndicator?,
 ) : TableCellRenderer {
     override fun getTableCellRendererComponent(
         table: JTable,
@@ -126,13 +132,14 @@ internal class SortableHeaderRenderer(
     ): Component {
         val component = delegate.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
         if (component is JLabel) {
-            val modelColumn = table.convertColumnIndexToModel(column)
+            val sorted = indicator(table.convertColumnIndexToModel(column))
             component.horizontalTextPosition = SwingConstants.LEFT
-            component.icon = when {
-                modelColumn != sortColumn() -> null
-                ascending() -> AllIcons.General.ArrowUp
-                else -> AllIcons.General.ArrowDown
+            component.icon = when (sorted?.direction) {
+                null -> null
+                SortDirection.ASCENDING -> AllIcons.General.ArrowUp
+                SortDirection.DESCENDING -> AllIcons.General.ArrowDown
             }
+            if (sorted != null && sorted.ofMany) component.text = "${value ?: ""} ${sorted.position}"
         }
         return component
     }
