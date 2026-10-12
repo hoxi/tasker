@@ -176,7 +176,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      */
     private val sortModel: SortModel = DefaultSortModel(
         initial = savedSortSpec(),
+        saved = settings.getValue(SAVED_SORT_KEY)?.let(SortSpecCodec::decode),
         persist = { settings.setValue(SORT_KEY, SortSpecCodec.encode(it)) },
+        persistSaved = { settings.setValue(SAVED_SORT_KEY, SortSpecCodec.encode(it)) },
         peopleSource = ::assigneeNames,
     )
 
@@ -268,6 +270,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val INCLUDE_CLOSED_KEY = "tasker.includeClosed"
         const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
         const val SORT_KEY = "tasker.sort"
+        const val SAVED_SORT_KEY = "tasker.sort.saved"
 
         /** Where versions before multi-rule sorting kept their single sort column; read once, then dropped. */
         const val LEGACY_SORT_COLUMN_KEY = "tasker.sortColumn"

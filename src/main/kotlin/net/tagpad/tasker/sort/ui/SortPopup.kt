@@ -34,7 +34,8 @@ import javax.swing.KeyStroke
 
 /**
  * The sort popup: one row per rule, in order — drag handle, place, what to sort by, how, remove — then
- * "+ Add sort", and Reset and Done at the foot.
+ * "+ Add sort", and Reset, Restore and Done at the foot. Done keeps the sort as the model's saved one, and
+ * Restore goes back to it — after a stray header click, say.
  *
  * It works entirely through [SortModel]: it shows the model's spec, writes every change straight back to it
  * (the sort applies live, as in Notion or Airtable), and follows changes made elsewhere while it is open, such
@@ -50,6 +51,10 @@ class SortPopup(private val model: SortModel) {
     }
 
     private val addLink = ActionLink("Add sort") { chooseRuleToAdd() }.apply { setIcon(AllIcons.General.Add, false) }
+
+    private val restoreLink = ActionLink("Restore") { model.saved?.let { apply(it) } }.apply {
+        toolTipText = "Go back to the sort as it was when Done was last pressed"
+    }
 
     private var popup: JBPopup? = null
 
@@ -67,7 +72,9 @@ class SortPopup(private val model: SortModel) {
             .createPopup()
         popup = created
         // Follows changes made by the other sort controls while open, such as a header click.
-        model.addListener(created) { spec -> if (!applying && spec != rulesShown()) render(spec) }
+        model.addListener(created) { spec ->
+            if (!applying && spec != rulesShown()) render(spec) else updateRestore()
+        }
         created.showUnderneathOf(anchor)
     }
 
@@ -88,7 +95,14 @@ class SortPopup(private val model: SortModel) {
                 JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
                     isOpaque = false
                     add(ActionLink("Reset") { apply(SortSpec()) })
-                    add(JButton("Done").apply { addActionListener { popup?.cancel() } })
+                    add(restoreLink)
+                    add(JButton("Done").apply {
+                        toolTipText = "Keep this sort, to restore later"
+                        addActionListener {
+                            this@SortPopup.model.save()
+                            popup?.cancel()
+                        }
+                    })
                 },
                 BorderLayout.EAST,
             )
@@ -108,6 +122,7 @@ class SortPopup(private val model: SortModel) {
         if (spec.isEmpty) rows.add(emptyHint)
         spec.rules.forEach { rows.add(RuleRow(it, spec)) }
         addLink.isVisible = unusedChoices(spec).isNotEmpty()
+        updateRestore()
         rows.revalidate()
         rows.repaint()
         popup?.pack(true, true)
@@ -124,7 +139,13 @@ class SortPopup(private val model: SortModel) {
         } finally {
             applying = false
         }
-        if (rerender) render(spec)
+        if (rerender) render(spec) else updateRestore()
+    }
+
+    /** Restore is offered only when there is a saved sort to go back to, other than the one shown. */
+    private fun updateRestore() {
+        val saved = model.saved
+        restoreLink.isEnabled = saved != null && saved != model.spec
     }
 
     private fun unusedChoices(spec: SortSpec): List<SortRuleChoice> = model.choices.filterNot { it.isUsed(spec) }

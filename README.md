@@ -50,7 +50,8 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
   each one's direction ("Newest first", "Highest first"), and rank assignees, for example *Me*, then a colleague, then
   everyone else. Status sorts in workflow order, empty values always go last, and ties keep each server's own order.
   Assignee and priority come from the GitHub, GitLab, Jira and YouTrack adapters; other servers' rows sort after
-  theirs. Changes apply as you make them, and *Reset* goes back to each server's own order.
+  theirs. Changes apply as you make them, and *Reset* goes back to each server's own order. *Done* saves the sort,
+  and *Restore* brings the saved one back — after an accidental header click, say.
 - **Grouping** — tasks sit under their server by default. Turn *Group by Server* off for a flat list, where each row
   shows its server's icon instead.
 - **Status** — rendered as a coloured badge using the tracker's own state name, not a flattened approximation of it.
@@ -60,7 +61,7 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
 - **Task list limit** caps how many issues are requested from each server. Lower is faster; the default is 30.
 - **Dates** follow the IDE's own date format, as set under *Settings | Appearance & Behavior | System Settings*.
 
-Grouping, closed issues, the task limit and the sort column are remembered per project.
+Grouping, closed issues, the task list limit, the sort and the saved sort are remembered per project.
 
 Servers load in parallel and the tree fills in as each one answers, so a slow tracker never holds up the rest. One that
 fails says so on its own row and leaves the others alone.
