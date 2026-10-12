@@ -231,8 +231,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     /** Reloads once the task limit has stopped changing. EDT-only. */
     private val limitRefreshTimer = Timer(LIMIT_SETTLE_MS) { reload(force = false) }.apply { isRepeats = false }
 
-    /** Checks for anything grown stale while the tool window is showing; see [refreshStale]. EDT-only. */
-    private val staleCheckTimer = Timer(STALE_CHECK_MS) { refreshStale() }
+    /**
+     * Checks for anything grown stale while the tool window is showing — see [refreshStale] — and redraws
+     * the dates, which may read "5 minutes ago". EDT-only.
+     */
+    private val staleCheckTimer = Timer(STALE_CHECK_MS) {
+        refreshStale()
+        if (isShowing) {
+            treeTable.repaint()
+            detailsPanel.refreshDates()
+        }
+    }
 
     /** Pending reads for the selected task, until the selection has settled. EDT-only. */
     private var selectionSettleTimer: Timer? = null
