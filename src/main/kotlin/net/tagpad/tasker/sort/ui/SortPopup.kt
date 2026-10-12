@@ -43,7 +43,7 @@ import javax.swing.KeyStroke
  */
 class SortPopup(private val model: SortModel) {
 
-    private val rows = ReorderPanel(VerticalLayout(JBUI.scale(6)))
+    private val rows = ReorderPanel(VerticalLayout(6))
 
     private val emptyHint = JBLabel("Sorted in each server's own order.").apply {
         foreground = NamedColorUtil.getInactiveTextColor()
@@ -93,7 +93,7 @@ class SortPopup(private val model: SortModel) {
                 BorderLayout.EAST,
             )
         }
-        return JPanel(VerticalLayout(JBUI.scale(10))).apply {
+        return JPanel(VerticalLayout(10)).apply {
             border = JBUI.Borders.empty(10, 12)
             add(header)
             add(rows)

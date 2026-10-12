@@ -180,7 +180,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     private val pullRequestsHeading = sectionLabel("PULL REQUESTS")
-    private val pullRequestsList = JPanel(VerticalLayout(JBUI.scale(4))).apply { isOpaque = false }
+    private val pullRequestsList = JPanel(VerticalLayout(4)).apply { isOpaque = false }
 
     /** Linked pull and merge requests; hidden while there are none, rather than announcing an empty list. */
     private val pullRequestsSection = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
