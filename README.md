@@ -11,6 +11,11 @@ The bundled **Task Management** plugin already knows how to talk to your tracker
 search popup, one issue at a time. Tasker reuses those same server connections and shows the lot as a table you can
 actually work in.
 
+Out of the box, Tasker lists and shows issues from **every** server type Task Management supports. For **GitHub**,
+**GitLab**, **Jira** and **YouTrack** it goes much further, reading and editing what the platform leaves out: titles,
+descriptions and comments edited in place, priorities and labels, linked pull requests, comment threads, reactions and
+avatars, and each tracker's own status names. More server types may get the same detailed handling in the future.
+
 ## Requirements
 
 - IntelliJ IDEA **2026.1** or newer (build 261+)
@@ -108,6 +113,10 @@ provider doesn't support it at all, or this particular issue isn't addressable.
 | **Task list limit**    | Issues requested from each server                                                                                                                |
 
 ## What works per provider
+
+Every server type Task Management supports is listed and shown: Bugzilla, Forgejo, FogBugz, Generic, GitHub, GitLab,
+Jira, Lighthouse, Mantis, PivotalTracker, Redmine, Trac, Trello and YouTrack. GitHub, GitLab, Jira and YouTrack also
+get a provider adapter, which is what the extra columns below come from; more server types may follow.
 
 Status changes go through the platform, so they work with **any** tracker that reports support for them. Everything else
 needs a provider adapter, because the platform's task API has no notion of renaming an issue, editing its description,
