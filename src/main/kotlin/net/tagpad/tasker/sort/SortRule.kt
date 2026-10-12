@@ -20,11 +20,17 @@ enum class SortDirection {
 sealed interface SortRule {
 
     fun comparator(): Comparator<SortableRow>
+
+    /** The rule in a few words, for tooltips: "Updated, newest first". */
+    val description: String
 }
 
 /** Orders by one [field], in one [direction]. */
 data class FieldSortRule(val field: SortField<*>, val direction: SortDirection) : SortRule {
     override fun comparator(): Comparator<SortableRow> = field.comparator(direction)
+
+    override val description: String
+        get() = "${this.field.displayName}, ${this.field.kind.label(direction).lowercase()}"
 }
 
 /**
@@ -39,6 +45,8 @@ data class AssigneeSortRule(
     val people: List<PersonMatcher>,
     val others: OthersPlacement = OthersPlacement.AFTER_BY_NAME,
 ) : SortRule {
+
+    override val description: String get() = "Assignee"
 
     override fun comparator(): Comparator<SortableRow> = Comparator { a, b ->
         val pa = place(a)

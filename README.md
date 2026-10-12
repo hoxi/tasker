@@ -43,8 +43,13 @@ id and uses it wherever it comes from.
 
 Opens as the **Tasks** tool window at the bottom of the IDE.
 
-- **Columns** — ID, Status, Summary, Updated, Created. Click a header to sort; drag to reorder anything except ID, which
-  stays pinned to the left because it carries the tree.
+- **Columns** — ID, Status, Summary, Updated, Created. Click a header to sort by that column, Shift+click to add it as a
+  further sort; drag to reorder anything except ID, which stays pinned to the left because it carries the tree.
+- **Sorting** — the *Sort* button opens a popup for sorting by several fields at once: drag the rules into order, pick
+  each one's direction ("Newest first", "Highest first"), and rank assignees, for example *Me*, then a colleague, then
+  everyone else. Status sorts in workflow order, empty values always go last, and ties keep each server's own order.
+  Assignee and priority come from the GitHub, GitLab, Jira and YouTrack adapters; other servers' rows sort after
+  theirs. Changes apply as you make them, and *Reset* goes back to each server's own order.
 - **Grouping** — tasks sit under their server by default. Turn *Group by Server* off for a flat list, where each row
   shows its server's icon instead.
 - **Status** — rendered as a coloured badge using the tracker's own state name, not a flattened approximation of it.
@@ -112,6 +117,7 @@ provider doesn't support it at all, or this particular issue isn't addressable.
 | **Refresh**            | Reload every server and drop cached comments — done for you after the servers are reconfigured                                                   |
 | **Group by Server**    | Toggle the per-server tree                                                                                                                       |
 | **Show Closed Issues** | Fetch and show closed/resolved issues too                                                                                                        |
+| **Sort**               | Sort by several fields, and rank assignees — see *Sorting* above                                                                                 |
 | **Tasks & Contexts**   | The bundled plugin's own menu — Switch Task, Open Task, Close Task, Save/Load/Clear Context, Configure Servers — without going to the Tools menu |
 | **Task list limit**    | Issues requested from each server                                                                                                                |
 
