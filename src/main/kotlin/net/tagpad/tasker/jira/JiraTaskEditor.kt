@@ -16,6 +16,7 @@ import net.tagpad.tasker.JSON_CONTENT_TYPE
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.TaskDecoration
+import net.tagpad.tasker.TaskAssignee
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskEditors
 import net.tagpad.tasker.TaskExtras
@@ -30,6 +31,7 @@ import net.tagpad.tasker.currentUserId
 import net.tagpad.tasker.idOrEmpty
 import net.tagpad.tasker.objectOrNull
 import net.tagpad.tasker.readJsonObject
+import net.tagpad.tasker.readJsonObjects
 import net.tagpad.tasker.sendJson
 import net.tagpad.tasker.stringOrEmpty
 import java.net.URI
@@ -244,11 +246,12 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
     }
 
     /**
-     * Status and issue type for the whole list, a page of keys per request.
+     * Status, issue type, assignee and priority for the whole list, a page of keys per request.
      *
      * The status is the workflow's own name — "In Review", "Selected for Development" — which `JiraTask`
      * squeezes into [com.intellij.tasks.TaskState] by numeric id. Ids are per-site on Cloud, so most
-     * statuses there come out as OTHER and would be shown as plain "Open".
+     * statuses there come out as OTHER and would be shown as plain "Open". Assignee and priority ride
+     * along in the same request, for sorting the list by them.
      */
     override fun decorate(tasks: List<Task>): Map<String, TaskDecoration> {
         val base = apiBase() ?: return emptyMap()
@@ -257,28 +260,53 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         // Cloud retired /search in favour of /search/jql; Server and Data Center only have the former.
         val searchUrl = if (isCloud()) "$base/search/jql" else "$base/search"
+        val me = currentUser()
+        val ranks = priorityRanks(base)
         val result = HashMap<String, TaskDecoration>()
         for (page in keys.chunked(PAGE_SIZE)) {
             val jql = URLEncoder.encode("key in (${page.joinToString(",")})", StandardCharsets.UTF_8)
-            val url = "$searchUrl?jql=$jql&fields=status,issuetype&maxResults=${page.size}"
+            val url = "$searchUrl?jql=$jql&fields=status,issuetype,assignee,priority&maxResults=${page.size}"
             val response = readJsonObject(url, headers())
             val issues = response.get("issues")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
             for (element in issues) {
                 val issue = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
                 val key = issue.stringOrEmpty("key").takeIf { it.isNotBlank() } ?: continue
-                result[key] = decoration(issue.objectOrNull("fields") ?: continue)
+                result[key] = decoration(issue.objectOrNull("fields") ?: continue, me, ranks)
             }
         }
         return result
     }
 
-    private fun decoration(fields: JsonObject): TaskDecoration {
+    private fun decoration(fields: JsonObject, me: String?, ranks: Map<String, Int>): TaskDecoration {
         val type = fields.objectOrNull("issuetype")
+        val assignee = fields.objectOrNull("assignee")
+        val priority = fields.objectOrNull("priority")
         return TaskDecoration(
             status = fields.objectOrNull("status")?.stringOrEmpty("name")?.takeIf { it.isNotBlank() },
             icon = type?.stringOrEmpty("iconUrl")?.let(::icon),
             properties = buildList { addIfPresent("Type", type?.stringOrEmpty("name")) },
+            assignees = listOfNotNull(
+                assignee?.stringOrEmpty("displayName")?.takeIf { it.isNotBlank() }
+                    ?.let { TaskAssignee(it, isMe = me != null && userId(assignee) == me) },
+            ),
+            priority = priority?.stringOrEmpty("name")?.takeIf { it.isNotBlank() }?.let { name ->
+                TaskPriority(name, icon(priority.stringOrEmpty("iconUrl")), ranks[priority.idOrEmpty("id")])
+            },
         )
+    }
+
+    /**
+     * Each priority's place in the site's list, most urgent first, by priority id. Jira returns its
+     * priorities in their configured order, which is the order its own boards sort by; the names alone say
+     * nothing about it, and sites rename and add levels freely. Read once per site and session; empty when
+     * it can't be read, which leaves priorities unsortable rather than the list unloadable.
+     */
+    private fun priorityRanks(base: String): Map<String, Int> = PRIORITY_RANKS.getOrPut(base) {
+        runCatching {
+            readJsonObjects("$base/priority", headers())
+                .mapIndexedNotNull { index, p -> p.idOrEmpty("id").takeIf { it.isNotBlank() }?.let { it to index } }
+                .toMap()
+        }.getOrElse { return emptyMap() }
     }
 
     /**
@@ -406,6 +434,9 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         /** Shared across instances — [TaskEditors] builds a fresh editor per call. */
         val ICONS = ConcurrentHashMap<String, Optional<Icon>>()
+
+        /** Priority order per site, keyed by API base; see [priorityRanks]. */
+        val PRIORITY_RANKS = ConcurrentHashMap<String, Map<String, Int>>()
     }
 }
 

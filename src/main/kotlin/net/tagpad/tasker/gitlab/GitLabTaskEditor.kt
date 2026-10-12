@@ -8,12 +8,15 @@ import net.tagpad.tasker.CodeHost
 import net.tagpad.tasker.JSON_CONTENT_TYPE
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.PullRequestState
+import net.tagpad.tasker.TaskAssignee
+import net.tagpad.tasker.TaskDecoration
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
 import net.tagpad.tasker.TaskLabel
 import net.tagpad.tasker.addIfPresent
 import net.tagpad.tasker.baseUrlOrNull
 import net.tagpad.tasker.credentialsOrNull
+import net.tagpad.tasker.currentUserId
 import net.tagpad.tasker.idOrEmpty
 import net.tagpad.tasker.mapArray
 import net.tagpad.tasker.objectOrNull
@@ -124,6 +127,44 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
         return found.values.toList()
     }
 
+    /**
+     * Who each listed issue is assigned to, for sorting the list by it — GitLab issues have no priority of
+     * their own. One request per project and page of a hundred, looked up by the issues' iids.
+     */
+    override fun decorate(tasks: List<Task>): Map<String, TaskDecoration> {
+        val me = currentUser()
+        val byProject = tasks.mapNotNull { task -> endpoint(task)?.let { it to task } }
+            .groupBy({ it.first.substringBeforeLast("/issues/") }, { it.second })
+        val result = HashMap<String, TaskDecoration>()
+        for ((projectEndpoint, projectTasks) in byProject) {
+            val byIid = projectTasks.associateBy { requireEndpoint(it).substringAfterLast("/issues/") }
+            for (page in byIid.keys.chunked(PAGE_SIZE)) {
+                val iids = page.joinToString("&") { "iids[]=$it" }
+                val issues = readJsonObjects("$projectEndpoint/issues?$iids&per_page=$PAGE_SIZE", headers())
+                for (issue in issues) {
+                    val task = byIid[issue.idOrEmpty("iid")] ?: continue
+                    val people = issue.get("assignees")?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+                        .orEmpty()
+                    result[task.id] = TaskDecoration(
+                        assignees = people.mapNotNull { person ->
+                            person.stringOrEmpty("name").ifBlank { person.stringOrEmpty("username") }
+                                .takeIf { it.isNotBlank() }
+                                ?.let { TaskAssignee(it, isMe = me != null && person.stringOrEmpty("username") == me) }
+                        },
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    /** The token owner's username, which is how assignees are recognised as the user. */
+    private fun currentUser(): String? = repository.currentUserId {
+        readJsonObject("${repository.baseUrlOrNull() ?: return@currentUserId null}/api/v4/user", headers())
+            .stringOrEmpty("username")
+    }
+
     private fun updateIssue(task: Task, field: String, value: String) {
         val payload = JsonObject().apply { addProperty(field, value) }
         HttpRequests.put(requireEndpoint(task), JSON_CONTENT_TYPE).sendJson(payload, headers())
@@ -151,6 +192,9 @@ class GitLabTaskEditor(private val repository: TaskRepository) : TaskEditor {
     private fun requireEndpoint(task: Task): String =
         endpoint(task) ?: error("${task.presentableId} has no usable GitLab issue url")
 }
+
+/** Issues looked up per request; GitLab's maximum page size. */
+private const val PAGE_SIZE = 100
 
 private val ISSUE_URL = Regex("""https?://[^/]+/(.+?)(?:/-)?/issues/(\d+)""")
 

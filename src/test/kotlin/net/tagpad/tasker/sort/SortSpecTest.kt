@@ -43,7 +43,11 @@ class SortSpecTest {
 
     @Test
     fun `status sorts by workflow, not alphabetically`() {
-        val rows = listOf(Row("done", status = "Done"), Row("doing", status = "In Progress"), Row("todo", status = "To Do"))
+        val rows = listOf(
+            Row("done", status = "Done"),
+            Row("doing", status = "In Progress"),
+            Row("todo", status = "To Do"),
+        )
         val spec = SortSpec(listOf(FieldSortRule(SortFields.STATUS, SortDirection.ASCENDING)))
         assertEquals(listOf("todo", "doing", "done"), ids(spec, rows))
     }

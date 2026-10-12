@@ -13,6 +13,8 @@ import net.tagpad.tasker.EditableComment
 import net.tagpad.tasker.JSON_CONTENT_TYPE
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.ReactableComment
+import net.tagpad.tasker.TaskAssignee
+import net.tagpad.tasker.TaskDecoration
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
 import net.tagpad.tasker.TaskLabel
@@ -28,6 +30,8 @@ import net.tagpad.tasker.readJsonObject
 import net.tagpad.tasker.readJsonObjects
 import net.tagpad.tasker.sendJson
 import net.tagpad.tasker.stringOrEmpty
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.Date
 
 /**
@@ -109,6 +113,58 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
             }
             .orEmpty()
         return TaskExtras(priority = priority, labels = tags)
+    }
+
+    /**
+     * Who each listed issue is assigned to and how urgent it is, for sorting the list by them, in one search
+     * per page of issues. A priority's rank is its ordinal in the field's value bundle, which is the order
+     * YouTrack itself lists them in — most urgent first in the default bundle.
+     */
+    override fun decorate(tasks: List<Task>): Map<String, TaskDecoration> {
+        val base = repository.baseUrlOrNull() ?: return emptyMap()
+        if (repository.credentialsOrNull() == null) return emptyMap()
+        val me = currentUser()
+        val fields = "idReadable,customFields(name,value(name,fullName,login,id,ordinal,color(background)))"
+        val result = HashMap<String, TaskDecoration>()
+        for (page in tasks.map { it.id }.filter(String::isNotBlank).distinct().chunked(PAGE_SIZE)) {
+            val query = URLEncoder.encode("issue id: ${page.joinToString(", ")}", StandardCharsets.UTF_8)
+            val issues = readJsonObjects("$base/api/issues?query=$query&fields=$fields&\$top=${page.size}", headers())
+            for (issue in issues) {
+                val id = issue.stringOrEmpty("idReadable").takeIf { it.isNotBlank() } ?: continue
+                result[id] = decoration(issue, me)
+            }
+        }
+        return result
+    }
+
+    private fun decoration(issue: JsonObject, me: String?): TaskDecoration {
+        val customFields = issue.get("customFields")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            .orEmpty()
+        fun field(name: String) = customFields.firstOrNull { it.stringOrEmpty("name").equals(name, ignoreCase = true) }
+
+        // A single-user field holds one user, a multi-user field an array of them.
+        val assigneeValue = field("Assignee")?.get("value")
+        val users = when {
+            assigneeValue == null || assigneeValue.isJsonNull -> emptyList()
+            assigneeValue.isJsonArray ->
+                assigneeValue.asJsonArray.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            assigneeValue.isJsonObject -> listOf(assigneeValue.asJsonObject)
+            else -> emptyList()
+        }
+        val priority = field("Priority")?.objectOrNull("value")?.let { value ->
+            val name = value.stringOrEmpty("name").takeIf { it.isNotBlank() } ?: return@let null
+            val color = parseHexColor(value.objectOrNull("color")?.stringOrEmpty("background"))
+            val rank = value.get("ordinal")?.takeIf { it.isJsonPrimitive }?.let { runCatching { it.asInt }.getOrNull() }
+            TaskPriority(name, color?.let { ColorIcon(16, 16, 10, 10, it, false, 3) }, rank)
+        }
+        return TaskDecoration(
+            assignees = users.mapNotNull { user ->
+                user.stringOrEmpty("fullName").ifBlank { user.stringOrEmpty("login") }.takeIf { it.isNotBlank() }
+                    ?.let { TaskAssignee(it, isMe = me != null && user.idOrEmpty("id") == me) }
+            },
+            priority = priority,
+        )
     }
 
     override fun canEditComment(task: Task, comment: Comment): Boolean =
@@ -246,6 +302,9 @@ class YouTrackTaskEditor(private val repository: TaskRepository) : TaskEditor {
         endpoint(task) ?: error("${task.presentableId} cannot be addressed on ${repository.presentableName}")
 
     private companion object {
+        /** Issues looked up per search when decorating a list. */
+        const val PAGE_SIZE = 50
+
         /** VCS changes read per issue; commits count towards it too, and pull requests are among them. */
         const val MAX_VCS_CHANGES = 200
 
