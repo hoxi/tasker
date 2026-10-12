@@ -49,11 +49,14 @@ internal object DragReorder {
                 val from = peers.indexOf(item)
                 val bounds = peers.map { it.bounds }
                 val pointer = SwingUtilities.convertPoint(e.component, e.point, panel)
-                val slot = dropSlot(bounds, pointer)
-                target = targetIndex(from, slot)
+                val grabbed = SwingUtilities.convertPoint(e.component, start, panel)
+                // Where the item would be drawn if it followed the pointer.
+                val dragged = Rectangle(item.bounds).apply { translate(pointer.x - grabbed.x, pointer.y - grabbed.y) }
+                target = dropTarget(bounds, from, dragged, pointer)
                 panel.showDrag(
                     carried = item.bounds,
-                    marker = if (target == from) null else marker(bounds, slot, pointer, JBUI.scale(2)),
+                    marker = if (target == from) null
+                    else marker(bounds, slotFor(from, target), pointer, JBUI.scale(2)),
                 )
             }
 
@@ -87,6 +90,25 @@ internal object DragReorder {
         parent.repaint()
         return true
     }
+
+    /**
+     * Where the item at [from] lands among siblings laid out at [bounds], carried to [dragged] by the pointer
+     * now at [point].
+     *
+     * In a column it passes a row once its leading edge crosses that row's middle — its bottom edge going down,
+     * its top edge going up — so rows of any height swap after the same feel of movement. Going by the pointer
+     * instead, a tall row would have to be dragged most of its own height before the next row gave way, and a
+     * short one dragged deep into a tall neighbour. Chips, alike in size, go by the pointer: see [dropSlot].
+     */
+    fun dropTarget(bounds: List<Rectangle>, from: Int, dragged: Rectangle, point: Point): Int {
+        if (isWrapping(bounds)) return targetIndex(from, dropSlot(bounds, point))
+        val down = (from + 1 until bounds.size).takeWhile { dragged.maxY >= bounds[it].centerY }.count()
+        if (down > 0) return from + down
+        return from - (from - 1 downTo 0).takeWhile { dragged.y <= bounds[it].centerY }.count()
+    }
+
+    /** The gap the item at [from] goes into to end up at [target]: past it going down, before it going up. */
+    fun slotFor(from: Int, target: Int): Int = if (target > from) target + 1 else target
 
     /**
      * The gap among siblings laid out at [bounds] that [point] is in: 0 before the first, `bounds.size` after
