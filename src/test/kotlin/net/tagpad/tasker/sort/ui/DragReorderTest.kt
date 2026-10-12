@@ -30,6 +30,28 @@ class DragReorderTest {
         assertEquals(3, DragReorder.dropSlot(chips, Point(40, 30)))
     }
 
+    /** A short row, a tall one like the assignee ranking, and another short one, 6px apart. */
+    private val mixed = listOf(Rectangle(0, 0, 200, 20), Rectangle(0, 26, 200, 80), Rectangle(0, 112, 200, 20))
+
+    private fun drop(from: Int, dy: Int) =
+        DragReorder.dropTarget(mixed, from, Rectangle(mixed[from]).apply { translate(0, dy) }, Point(10, 0))
+
+    @Test
+    fun `a short row passes a tall one once its bottom edge crosses the tall one's middle`() {
+        assertEquals(0, drop(0, 40))
+        assertEquals(1, drop(0, 46))
+        assertEquals(2, drop(2, -40))
+        assertEquals(1, drop(2, -46))
+    }
+
+    @Test
+    fun `a tall row passes a short one as soon as its edge crosses the short one's middle`() {
+        assertEquals(1, drop(1, 10))
+        assertEquals(2, drop(1, 16))
+        assertEquals(1, drop(1, -10))
+        assertEquals(0, drop(1, -16))
+    }
+
     @Test
     fun `the gaps either side of the item leave it where it is`() {
         assertEquals(1, DragReorder.targetIndex(1, 1))
