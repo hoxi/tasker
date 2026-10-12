@@ -35,6 +35,7 @@ import com.intellij.tasks.Task
 import com.intellij.tasks.TaskListener
 import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
+import com.intellij.ui.BadgeIconSupplier
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.JBIntSpinner
 import com.intellij.ui.OnePixelSplitter
@@ -52,6 +53,7 @@ import net.tagpad.tasker.sort.SortDirection
 import net.tagpad.tasker.sort.SortModel
 import net.tagpad.tasker.sort.SortSpec
 import net.tagpad.tasker.sort.SortSpecCodec
+import net.tagpad.tasker.sort.ui.SortPopup
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.FlowLayout
@@ -424,6 +426,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 reload(force = false) // a list held for this setting is shown, or fetched
             }
         })
+        group.add(SortAction())
         /*
          * Registered by the Task Management plugin, which this plugin depends on outright — so the only
          * way this misses is a rename on JetBrains' side, and then the button simply isn't there.
@@ -454,6 +457,30 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         return JPanel(BorderLayout()).apply {
             add(actionToolbar.component, BorderLayout.WEST)
             add(limitPanel, BorderLayout.EAST)
+        }
+    }
+
+    /**
+     * Opens the sort popup under the button. The icon wears a dot while any sort applies, and the tooltip
+     * says what it is, so a sorted list can be told from the servers' own order at a glance.
+     */
+    private inner class SortAction :
+        AnAction("Sort…", "Sort tasks by any number of fields", AllIcons.ObjectBrowser.Sorted), DumbAware {
+
+        private val badged = BadgeIconSupplier(AllIcons.ObjectBrowser.Sorted)
+
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        override fun update(e: AnActionEvent) {
+            val spec = sortModel.spec
+            e.presentation.icon = badged.getLiveIndicatorIcon(!spec.isEmpty)
+            e.presentation.description =
+                if (spec.isEmpty) "Sort tasks — in each server's own order now"
+                else "Sorted by " + spec.rules.joinToString(", then ") { it.description }
+        }
+
+        override fun actionPerformed(e: AnActionEvent) {
+            SortPopup(sortModel).show(e.inputEvent?.component as? JComponent ?: treeTable)
         }
     }
 
