@@ -43,7 +43,7 @@ import javax.swing.KeyStroke
  */
 class SortPopup(private val model: SortModel) {
 
-    private val rows = JPanel(VerticalLayout(JBUI.scale(6))).apply { isOpaque = false }
+    private val rows = ReorderPanel(VerticalLayout(JBUI.scale(6)))
 
     private val emptyHint = JBLabel("Sorted in each server's own order.").apply {
         foreground = NamedColorUtil.getInactiveTextColor()
