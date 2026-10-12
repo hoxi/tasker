@@ -16,8 +16,16 @@ data class TaskProperty(val label: String, val value: String)
 /**
  * How urgent a task is, as the tracker names it. [icon] is the tracker's own artwork for it where it
  * has some (Jira's arrows), or a swatch of the tracker's colour for it (YouTrack's); otherwise none.
+ * [rank] is its place among the tracker's priorities, lower being more urgent, where the tracker orders
+ * them; it is what sorting by priority goes by.
  */
-data class TaskPriority(val name: String, val icon: Icon? = null)
+data class TaskPriority(val name: String, val icon: Icon? = null, val rank: Int? = null)
+
+/**
+ * Someone a task is assigned to, by the name the tracker shows. [isMe] marks whoever the server's
+ * credentials belong to, which only the tracker's adapter can tell.
+ */
+data class TaskAssignee(val name: String, val isMe: Boolean = false)
 
 /**
  * A tag or label on a task. [background] is the tracker's colour for it, when it assigns one; the
@@ -57,12 +65,15 @@ data class TaskExtras(
  * What a row shows that [Task] gets wrong or leaves out, resolved for a whole list at once.
  *
  * [status] replaces [statusText] when set, [icon] replaces [Task.getIcon], and [properties] join the
- * details pane's meta row ahead of anything [TaskEditor.extras] fetches later.
+ * details pane's meta row ahead of anything [TaskEditor.extras] fetches later. [assignees] and [priority]
+ * are what the list is sorted by; null [assignees] means the adapter didn't say, as opposed to nobody.
  */
 data class TaskDecoration(
     val status: String? = null,
     val icon: Icon? = null,
     val properties: List<TaskProperty> = emptyList(),
+    val assignees: List<TaskAssignee>? = null,
+    val priority: TaskPriority? = null,
 )
 
 /**

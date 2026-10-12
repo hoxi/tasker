@@ -46,6 +46,12 @@ import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.io.HttpRequests
 import com.intellij.util.ui.ColumnInfo
 import com.intellij.util.ui.JBUI
+import net.tagpad.tasker.sort.DefaultSortModel
+import net.tagpad.tasker.sort.FieldSortRule
+import net.tagpad.tasker.sort.SortDirection
+import net.tagpad.tasker.sort.SortModel
+import net.tagpad.tasker.sort.SortSpec
+import net.tagpad.tasker.sort.SortSpecCodec
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.FlowLayout
@@ -160,8 +166,16 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private var groupByServer: Boolean = settings.getBoolean(GROUP_BY_SERVER_KEY, true)
     private var includeClosed: Boolean = settings.getBoolean(INCLUDE_CLOSED_KEY, false)
     private var issueLimit: Int = settings.getInt(ISSUE_LIMIT_KEY, DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
-    private var sortColumn: Int? = settings.getInt(SORT_COLUMN_KEY, -1).takeIf { it in columns.indices }
-    private var sortAscending: Boolean = settings.getBoolean(SORT_ASCENDING_KEY, true)
+
+    /**
+     * How the list is sorted, as every sort control edits it — the column headers and the sort popup —
+     * and saved per project. The tree only reads it, and redraws when it changes.
+     */
+    private val sortModel: SortModel = DefaultSortModel(
+        initial = savedSortSpec(),
+        persist = { settings.setValue(SORT_KEY, SortSpecCodec.encode(it)) },
+        peopleSource = ::assigneeNames,
+    )
 
     /** Incremented on every selection so stale lazy detail fetches can be discarded. */
     private var detailRequestId: Int = 0
@@ -250,8 +264,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val GROUP_BY_SERVER_KEY = "tasker.groupByServer"
         const val INCLUDE_CLOSED_KEY = "tasker.includeClosed"
         const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
-        const val SORT_COLUMN_KEY = "tasker.sortColumn"
-        const val SORT_ASCENDING_KEY = "tasker.sortAscending"
+        const val SORT_KEY = "tasker.sort"
+
+        /** Where versions before multi-rule sorting kept their single sort column; read once, then dropped. */
+        const val LEGACY_SORT_COLUMN_KEY = "tasker.sortColumn"
+        const val LEGACY_SORT_ASCENDING_KEY = "tasker.sortAscending"
 
         /** How often [refreshStale] looks for anything older than the platform's update interval. */
         const val STALE_CHECK_MS = 60_000
@@ -314,6 +331,11 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             },
         )
 
+        sortModel.addListener(this) {
+            rebuild()
+            treeTable.tableHeader.repaint()
+        }
+
         treeTable.setRootVisible(false)
         treeTable.tree.showsRootHandles = true
         treeTable.setRowHeight(JBUI.scale(24))
@@ -325,7 +347,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             ),
         )
         treeTable.tableHeader.defaultRenderer =
-            SortableHeaderRenderer(treeTable.tableHeader.defaultRenderer, { sortColumn }, { sortAscending })
+            SortableHeaderRenderer(treeTable.tableHeader.defaultRenderer) { column ->
+                sortFieldForColumn(column)?.let(sortModel.spec::indicatorFor)
+            }
         treeTable.tableHeader.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) = onHeaderClicked(e)
         })
@@ -646,9 +670,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 return
             }
 
-            val comparator: Comparator<DefaultMutableTreeNode>? = sortColumn?.let { col ->
-                columns[col].comparator?.let { if (sortAscending) it else it.reversed() }
-            }
+            val sort = sortModel.spec
 
             if (groupByServer) {
                 for (serverGroup in cache) {
@@ -656,17 +678,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                         DefaultMutableTreeNode(ServerNode(serverGroup.repository, serverGroup.error, serverGroup.loading))
                     serverGroup.tasks
                         .map { TaskNode(it, serverGroup.repository, serverGroup.decorations[it.id]) }
-                        .map { DefaultMutableTreeNode(it) }
-                        .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
-                        .forEach { serverNode.add(it) }
+                        .let(sort::sort)
+                        .forEach { serverNode.add(DefaultMutableTreeNode(it)) }
                     root.add(serverNode)
                 }
             } else {
                 val taskNodes = cache
                     .flatMap { group -> group.tasks.map { TaskNode(it, group.repository, group.decorations[it.id]) } }
-                    .map { DefaultMutableTreeNode(it) }
-                    .let { nodes -> comparator?.let(nodes::sortedWith) ?: nodes }
-                taskNodes.forEach { root.add(it) }
+                    .let(sort::sort)
+                taskNodes.forEach { root.add(DefaultMutableTreeNode(it)) }
                 if (taskNodes.isEmpty()) {
                     root.add(DefaultMutableTreeNode(if (cache.any { it.loading }) "Loading…" else "No tasks"))
                 }
@@ -697,23 +717,31 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         treeModel.reload()
     }
 
+    /** A header click sorts by that column alone; with Shift, it adds the column as a further rule. */
     private fun onHeaderClicked(e: MouseEvent) {
-        val header = treeTable.tableHeader
-        val viewColumn = header.columnAtPoint(e.point)
+        val viewColumn = treeTable.tableHeader.columnAtPoint(e.point)
         if (viewColumn < 0) return
-        val modelColumn = treeTable.convertColumnIndexToModel(viewColumn)
-        if (columns[modelColumn].comparator == null) return
-        if (sortColumn == modelColumn) {
-            sortAscending = !sortAscending
-        } else {
-            sortColumn = modelColumn
-            sortAscending = true
-        }
-        settings.setValue(SORT_COLUMN_KEY, modelColumn, -1)
-        settings.setValue(SORT_ASCENDING_KEY, sortAscending, true)
-        rebuild()
-        header.repaint()
+        val field = sortFieldForColumn(treeTable.convertColumnIndexToModel(viewColumn)) ?: return
+        sortModel.update(sortModel.spec.withHeaderClick(field, additive = e.isShiftDown))
     }
+
+    /** The saved sort, or the single column an older version saved, carried over once. */
+    private fun savedSortSpec(): SortSpec {
+        settings.getValue(SORT_KEY)?.let { return SortSpecCodec.decode(it) }
+        val legacyField = sortFieldForColumn(settings.getInt(LEGACY_SORT_COLUMN_KEY, -1))
+        val ascending = settings.getBoolean(LEGACY_SORT_ASCENDING_KEY, true)
+        settings.unsetValue(LEGACY_SORT_COLUMN_KEY)
+        settings.unsetValue(LEGACY_SORT_ASCENDING_KEY)
+        val direction = if (ascending) SortDirection.ASCENDING else SortDirection.DESCENDING
+        return SortSpec(listOfNotNull(legacyField?.let { FieldSortRule(it, direction) }))
+    }
+
+    /** Everyone the rows on display are assigned to, for the sort controls to offer by name. */
+    private fun assigneeNames(): List<String> =
+        cache.flatMap { group -> group.decorations.values.flatMap { it.assignees.orEmpty() } }
+            .map { it.name }
+            .distinct()
+            .sortedWith(String.CASE_INSENSITIVE_ORDER)
 
     private fun selectedTaskNode(): TaskNode? {
         val row = treeTable.selectedRow
