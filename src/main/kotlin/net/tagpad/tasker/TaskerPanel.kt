@@ -8,6 +8,7 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionGroupWrapper
 import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -280,6 +281,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val INCLUDE_CLOSED_KEY = "tasker.includeClosed"
         const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
         const val SORT_KEY = "tasker.sort"
+
+        /** Task Management's "Edit task" action, which edits the active task. */
+        const val EDIT_TASK_ACTION = "tasks.edit"
         const val SAVED_SORT_KEY = "tasker.sort.saved"
 
         /** Where versions before multi-rule sorting kept their single sort column; read once, then dropped. */
@@ -326,14 +330,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     init {
         /*
-         * Which row is bold depends on state the platform owns, so nothing here would notice it changing
-         * — not even a switch made from our own context menu, which goes straight to the TaskManager.
+         * Which row is bold, and which rows carry an arrow, depends on state the platform owns, so nothing here
+         * would notice it changing — not even a switch made from our own context menu, which goes straight to
+         * the TaskManager.
          */
         TaskManager.getManager(project).addTaskListener(object : TaskListener {
             override fun taskActivated(task: LocalTask) = treeTable.repaint()
             override fun taskDeactivated(task: LocalTask) = treeTable.repaint()
-            override fun taskAdded(task: LocalTask) = Unit
-            override fun taskRemoved(task: LocalTask) = Unit
+            override fun taskAdded(task: LocalTask) = treeTable.repaint()
+            override fun taskRemoved(task: LocalTask) = treeTable.repaint()
         }, this)
 
         KeyboardFocusManager.getCurrentKeyboardFocusManager()
@@ -361,7 +366,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         treeTable.setRowHeight(JBUI.scale(24))
         treeTable.setTreeCellRenderer(
             IdCellRenderer(
-                isActive = { isActiveTask(it.task, it.repository) },
+                activity = { activityOf(it.task, it.repository) },
                 grouped = { groupByServer },
                 taskIcon = { taskIcons.getOrPut(it.task.icon) { FallbackIcon(it.task.icon, it.repository.icon) } },
             ),
@@ -1011,20 +1016,26 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
 
     /**
-     * Whether this row is the task the IDE is currently on.
+     * Whether this row is the task the IDE is currently on, one started earlier — a [LocalTask] the IDE keeps
+     * to switch back to — or neither.
      *
-     * Compared by id rather than by identity: our rows are freshly fetched remote issues, while the
-     * active one is the [com.intellij.tasks.LocalTask] built from whichever copy was activated. Cheap
-     * enough for a renderer — the platform holds the active task in a field.
+     * Compared by id rather than by identity: our rows are freshly fetched remote issues, while local tasks
+     * are built from whichever copy was opened. Cheap enough for a renderer — the platform holds the active
+     * task in a field and the rest in a map by id.
      *
-     * Ids are only unique per server, so the server has to agree too — by url, since the local task
-     * outlives the server objects of the session it was activated in. One that doesn't know its server
-     * is taken on its id alone.
+     * Ids are only unique per server, so the server has to agree too — by url, since a local task outlives
+     * the server objects of the session it was opened in. One that doesn't know its server is taken on its
+     * id alone.
      */
-    private fun isActiveTask(task: Task, repository: TaskRepository): Boolean {
-        val active = TaskManager.getManager(project).activeTask
-        val activeServer = active.repository
-        return active.id == task.id && (activeServer == null || activeServer.url == repository.url)
+    private fun activityOf(task: Task, repository: TaskRepository): TaskActivity {
+        val manager = TaskManager.getManager(project)
+        fun matches(local: LocalTask): Boolean =
+            local.id == task.id && local.repository.let { it == null || it.url == repository.url }
+        return when {
+            matches(manager.activeTask) -> TaskActivity.ACTIVE
+            manager.findTask(task.id)?.takeIf { !it.isDefault && matches(it) } != null -> TaskActivity.STARTED
+            else -> TaskActivity.IDLE
+        }
     }
 
     /**
@@ -1176,7 +1187,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Offers switching to this task, then the states it can move to.
+     * Offers what can be done with this task, then the states it can move to: editing it — its name,
+     * changelist and branch, in Task Management's own dialog — when it is the task the IDE is on, which there
+     * is no switching to; switching to it otherwise, including back to one started earlier.
      *
      * The states come from the platform's own support: [TaskRepository.STATE_UPDATING] says whether the
      * server can do it at all, and [TaskRepository.getAvailableTaskStates] asks it which transitions are
@@ -1188,12 +1201,17 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     private fun showTaskMenu(node: TaskNode, at: RelativePoint) {
         val task = node.task
         val repository = node.repository
-        val switchItem = TaskMenuItem.Switch("Switch to ${switchTarget(task)}")
+        val target = switchTarget(task)
+        val active = activityOf(task, repository) == TaskActivity.ACTIVE
+        val actions = listOf(
+            if (active) TaskMenuItem.Action("Edit $target", ::editActiveTask)
+            else TaskMenuItem.Action("Switch to $target") { switchToTask(task) },
+        )
 
         if (!task.isIssue || !repository.isSupported(TaskRepository.STATE_UPDATING)) {
             val provider = repository.repositoryType?.name ?: "this server"
-            val items = listOf(switchItem, TaskMenuItem.Message("Status changes aren't supported for $provider"))
-            showTaskContextMenu(items, null, at, { switchToTask(task) }) {}
+            val items = actions + TaskMenuItem.Message("Status changes aren't supported for $provider")
+            showTaskContextMenu(items, null, at) {}
             return
         }
 
@@ -1220,7 +1238,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                     states.isEmpty() -> listOf(TaskMenuItem.Message("No states available for this task"))
                     else -> states.map(TaskMenuItem::State)
                 }
-                showTaskContextMenu(listOf(switchItem) + stateItems, statusText(task, node.decoration), at, { switchToTask(task) }) { state ->
+                showTaskContextMenu(actions + stateItems, statusText(task, node.decoration), at) { state ->
                     applyWrite(repository, task, "Updating status…") { repository.setTaskState(task, state) }
                 }
             }
@@ -1237,6 +1255,15 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val manager = TaskManager.getManager(project)
         val local = manager.findTask(task.id)
         if (local != null) manager.activateTask(local, true) else OpenTaskDialog(project, task).show()
+    }
+
+    /**
+     * Opens Task Management's "Edit task" dialog — name, changelist, branch — through its own action, which
+     * edits the active task. Its dialog takes the platform's local task class, which a plugin can't name.
+     */
+    private fun editActiveTask() {
+        val action = ActionManager.getInstance().getAction(EDIT_TASK_ACTION) ?: return
+        ActionManager.getInstance().tryToExecute(action, null, treeTable, ActionPlaces.POPUP, true)
     }
 
     /** Enough of the task to recognise the row that was right-clicked, without widening the popup. */

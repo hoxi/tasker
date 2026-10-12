@@ -56,8 +56,8 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
 - **Grouping** — tasks sit under their server by default. Turn *Group by Server* off for a flat list, where each row
   shows its server's icon instead.
 - **Status** — rendered as a coloured badge using the tracker's own state name, not a flattened approximation of it.
-- **The active task** is marked with a right arrow and bold text, and it updates the moment you switch, however you
-  switch.
+- **The active task** is marked with a yellow arrow and bold text, and tasks you've started before — the ones Task
+  Management keeps to switch back to — with a grey arrow. Both update the moment you switch, however you switch.
 - **Closed issues** are hidden by default and greyed when shown.
 - **Task list limit** caps how many issues are requested from each server. Lower is faster; the default is 30.
 - **Dates** follow the IDE's own date format, as set under *Settings | Appearance & Behavior | System Settings | Date
@@ -115,6 +115,8 @@ provider doesn't support it at all, or this particular issue isn't addressable.
 - **Switch to `<task>`** hands the issue to Task Management exactly as its own *Open Task* chooser does:
   an issue you've already worked on is activated outright, a new one opens the Open Task dialog, which is where the
   changelist, branch and context options live.
+- **Edit `<task>`** takes its place on the active task, opening Task Management's own *Edit Task* dialog for its name,
+  changelist and branch.
 - **Set status** lists only the transitions the server says are legal from the issue's current state, so a Jira workflow
   offers just the steps it actually permits.
 

@@ -6,6 +6,8 @@ import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
+import com.intellij.util.ui.CenteredIcon
+import com.intellij.util.ui.JBUI
 import net.tagpad.tasker.sort.SortDirection
 import net.tagpad.tasker.sort.SortIndicator
 import java.awt.Component
@@ -53,12 +55,18 @@ internal class FallbackIcon(private val delegate: Icon, private val fallback: Ic
 }
 
 /**
- * Renders the tree column (ID): server name for group rows, presentable id for task rows. [isActive]
- * tells it the task the IDE is on, [grouped] whether rows sit under their server, and [taskIcon] the
- * icon to show for a task its decoration has none for.
+ * Where a task stands with Task Management: the one the IDE is on, one started earlier — a local task the
+ * IDE can switch back to — or neither.
+ */
+internal enum class TaskActivity { ACTIVE, STARTED, IDLE }
+
+/**
+ * Renders the tree column (ID): server name for group rows, presentable id for task rows. [activity]
+ * tells it where a task stands with Task Management, [grouped] whether rows sit under their server, and
+ * [taskIcon] the icon to show for a task its decoration has none for.
  */
 internal class IdCellRenderer(
-    private val isActive: (TaskNode) -> Boolean,
+    private val activity: (TaskNode) -> TaskActivity,
     private val grouped: () -> Boolean,
     private val taskIcon: (TaskNode) -> Icon,
 ) : ColoredTreeCellRenderer() {
@@ -85,15 +93,18 @@ internal class IdCellRenderer(
 
             is TaskNode -> {
                 val task = obj.task
-                // The task the IDE is currently on, which the context menu can now switch.
-                val active = isActive(obj)
+                val state = activity(obj)
+                val active = state == TaskActivity.ACTIVE
                 /*
-                 * The active task gets an arrow in the icon slot, where the eye already is: bold alone
-                 * proved far too quiet on an id as short as "PC-1". Otherwise, when flat, the server
-                 * icon shows the task's origin; when grouped, that already sits on the header row.
+                 * The active task gets a yellow arrow in the icon slot, where the eye already is: bold alone
+                 * proved far too quiet on an id as short as "PC-1". It is the debugger's "you are here"
+                 * arrow, centred in the 16px slot it is 12px of. Tasks started earlier get the plain grey
+                 * one. Otherwise, when flat, the server icon shows the task's origin; when grouped, that
+                 * already sits on the header row.
                  */
                 icon = when {
-                    active -> AllIcons.Actions.Forward
+                    active -> CenteredIcon(AllIcons.Debugger.NextStatement, JBUI.scale(16), JBUI.scale(16), false)
+                    state == TaskActivity.STARTED -> AllIcons.Actions.Forward
                     grouped() -> obj.decoration?.icon ?: taskIcon(obj)
                     else -> obj.repository.icon
                 }
