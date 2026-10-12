@@ -76,16 +76,23 @@ internal object DragReorder {
     private fun peers(item: JComponent): List<Component> =
         item.parent.components.filter { it.javaClass == item.javaClass }
 
-    /** Puts [item] at [target] among its peers; false if that is where it already is. */
+    /**
+     * Puts [item] at [target] among its peers; false if that is where it already is.
+     *
+     * Every child is re-added in the new order rather than the item alone at an index: some layouts keep
+     * their own list of children and append whatever is added to it, whatever the index — IntelliJ's
+     * `VerticalLayout` does — which left the row drawn where it was while the panel's order said otherwise.
+     */
     private fun moveTo(item: JComponent, target: Int): Boolean {
         val parent = item.parent as? JComponent ?: return false
         val peers = peers(item)
         if (target !in peers.indices || peers[target] === item) return false
         val others = peers - item
-        parent.remove(item)
-        val at = if (target < others.size) parent.components.indexOf(others[target])
-        else parent.components.indexOf(others.last()) + 1
-        parent.add(item, at)
+        val children = parent.components.toMutableList().apply { remove(item) }
+        val at = if (target < others.size) children.indexOf(others[target]) else children.indexOf(others.last()) + 1
+        children.add(at, item)
+        parent.removeAll()
+        children.forEach(parent::add)
         parent.revalidate()
         parent.repaint()
         return true
@@ -164,7 +171,10 @@ internal object DragReorder {
     private const val DRAG_THRESHOLD = 4
 }
 
-/** A panel whose items [DragReorder] can drag into a new order; it paints the drag over its children. */
+/**
+ * A panel whose items [DragReorder] can drag into a new order; it paints the drag over its children. Its
+ * [layout] must place children in the order they were added, without constraints.
+ */
 internal class ReorderPanel(layout: LayoutManager) : JPanel(layout) {
 
     private var carried: Rectangle? = null
