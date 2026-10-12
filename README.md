@@ -7,9 +7,12 @@
 An IntelliJ IDEA tool window that puts every issue from every configured task server in one sortable, groupable table —
 with a details pane you can edit in place.
 
-The bundled **Task Management** plugin already knows how to talk to your trackers, but it only surfaces them through a
+JetBrains' **Task Management** plugin already knows how to talk to your trackers, but it only surfaces them through a
 search popup, one issue at a time. Tasker reuses those same server connections and shows the lot as a table you can
 actually work in.
+
+Task Management is no longer bundled with the IDE from **2026.2**: on 2026.2 and later, install
+[Task Management](https://plugins.jetbrains.com/plugin/11545-task-management) from the Marketplace before Tasker.
 
 Out of the box, Tasker lists and shows issues from **every** server type Task Management supports. For **GitHub**,
 **GitLab**, **Jira** and **YouTrack** it goes much further, reading and editing what the platform leaves out: titles,
@@ -20,21 +23,21 @@ avatars, and each tracker's own status names. More server types may get the same
 
 - IntelliJ IDEA **2026.1** or newer (build 261+)
 - The **Task Management** plugin (`com.intellij.tasks`) installed and enabled — Tasker depends on it outright and will
-  not load without it
+  not load without it. Bundled up to 2026.1; from 2026.2 it has to be installed manually, see below
 - At least one task server configured under **Settings | Tools | Tasks | Servers**
 
 Tasker adds no credentials or settings of its own. Every server, token and connection it uses is the one you already
 configured for Task Management.
 
-### You may need to install Task Management yourself
+### Installing Task Management on 2026.2 and later
 
-Task Management used to ship with the IDE, and in some JetBrains products it no longer does — IntelliJ IDEA 2026.2, for
-one, has no `plugins/tasks` in its distribution. Where that is the case, install
-[Task Management](https://plugins.jetbrains.com/plugin/11545-task-management) from the Marketplace first. Tasker
-declares a hard dependency on it, so without it Tasker will not load at all rather than degrading.
+Task Management shipped with the IDE up to 2026.1. From **2026.2** it is no longer bundled, and has to be installed
+manually: get [Task Management](https://plugins.jetbrains.com/plugin/11545-task-management) from the Marketplace —
+**Settings | Plugins | Marketplace**, search for *Task Management* — then install Tasker. Tasker declares a hard
+dependency on it, so without it Tasker will not load at all rather than degrading.
 
-The direction of travel is towards it being unbundled everywhere, so expect this to apply to more products from 2026.3
-onwards. Nothing changes for Tasker either way: it asks for the plugin by id and uses it wherever it comes from.
+On 2026.1 and earlier there is nothing to do: Task Management is already there. Either way Tasker asks for the plugin by
+id and uses it wherever it comes from.
 
 ## The task list
 
