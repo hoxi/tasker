@@ -87,6 +87,12 @@ private class StatusColumn : ColumnInfo<DefaultMutableTreeNode, String>("Status"
     override fun valueOf(item: DefaultMutableTreeNode): String = item.statusText()
 }
 
+/** Who the task is assigned to, as its adapter reported; blank where the tracker has no adapter. */
+private class AssigneeColumn : ColumnInfo<DefaultMutableTreeNode, String>("Assignee") {
+    override fun valueOf(item: DefaultMutableTreeNode): String =
+        (item.userObject as? TaskNode)?.assignees?.joinToString(", ") { it.name }.orEmpty()
+}
+
 private class SummaryColumn : ColumnInfo<DefaultMutableTreeNode, String>("Summary") {
     override fun valueOf(item: DefaultMutableTreeNode): String = item.task()?.summary ?: ""
 }
@@ -99,13 +105,20 @@ private class CreatedColumn : ColumnInfo<DefaultMutableTreeNode, String>("Create
     override fun valueOf(item: DefaultMutableTreeNode): String = formatDate(item.task()?.created)
 }
 
-/** Column order: ID (tree), Status, Summary, Updated, Created. */
+/** Column order: ID (tree), Status, Assignee, Summary, Updated, Created. */
 internal fun taskerColumns(): Array<ColumnInfo<DefaultMutableTreeNode, *>> =
-    arrayOf(IdColumn(), StatusColumn(), SummaryColumn(), UpdatedColumn(), CreatedColumn())
+    arrayOf(IdColumn(), StatusColumn(), AssigneeColumn(), SummaryColumn(), UpdatedColumn(), CreatedColumn())
 
 /** The field each column sorts by, by model index, in [taskerColumns]' order. */
 private val COLUMN_SORT_FIELDS: List<SortField<*>> =
-    listOf(SortFields.ID, SortFields.STATUS, SortFields.SUMMARY, SortFields.UPDATED, SortFields.CREATED)
+    listOf(
+        SortFields.ID,
+        SortFields.STATUS,
+        SortFields.ASSIGNEE,
+        SortFields.SUMMARY,
+        SortFields.UPDATED,
+        SortFields.CREATED,
+    )
 
 /** The field a click on the column at [modelIndex] sorts by, or null for a column that doesn't sort. */
 internal fun sortFieldForColumn(modelIndex: Int): SortField<*>? = COLUMN_SORT_FIELDS.getOrNull(modelIndex)

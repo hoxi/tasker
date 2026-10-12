@@ -64,6 +64,17 @@ class SortSpecTest {
     }
 
     @Test
+    fun `the assignee field sorts by name, with nobody last`() {
+        val rows = listOf(
+            Row("nobody"),
+            Row("bo", assignees = listOf(SortPerson("Bo"))),
+            Row("al", assignees = listOf(SortPerson("Al"))),
+        )
+        val spec = SortSpec(listOf(FieldSortRule(SortFields.ASSIGNEE, SortDirection.ASCENDING)))
+        assertEquals(listOf("al", "bo", "nobody"), ids(spec, rows))
+    }
+
+    @Test
     fun `assignee rule ranks the listed people, then everyone else by name`() {
         val rows = listOf(
             Row("bo", assignees = listOf(SortPerson("Bo"))),

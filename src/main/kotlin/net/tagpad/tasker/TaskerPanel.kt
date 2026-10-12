@@ -50,6 +50,7 @@ import com.intellij.util.ui.JBUI
 import net.tagpad.tasker.sort.DefaultSortModel
 import net.tagpad.tasker.sort.FieldSortRule
 import net.tagpad.tasker.sort.SortDirection
+import net.tagpad.tasker.sort.SortFields
 import net.tagpad.tasker.sort.SortModel
 import net.tagpad.tasker.sort.SortSpec
 import net.tagpad.tasker.sort.SortSpecCodec
@@ -119,7 +120,7 @@ private class TimedCache<V> {
 }
 
 /**
- * Tool window content: a multi-column [TreeTable] of tasks (ID / Status / Summary / Updated / Created)
+ * Tool window content: a multi-column [TreeTable] of tasks (ID / Status / Assignee / Summary / Updated / Created)
  * with a details pane on the right. Tasks can be grouped per server or shown as one merged list;
  * clicking a column header sorts — within each server group when grouped, globally when flat.
  */
@@ -272,6 +273,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val LEGACY_SORT_COLUMN_KEY = "tasker.sortColumn"
         const val LEGACY_SORT_ASCENDING_KEY = "tasker.sortAscending"
 
+        /** What [LEGACY_SORT_COLUMN_KEY]'s index meant: the columns as they stood before Assignee was added. */
+        val LEGACY_SORT_COLUMNS =
+            listOf(SortFields.ID, SortFields.STATUS, SortFields.SUMMARY, SortFields.UPDATED, SortFields.CREATED)
+
         /** How often [refreshStale] looks for anything older than the platform's update interval. */
         const val STALE_CHECK_MS = 60_000
 
@@ -384,7 +389,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     private fun setColumnWidths() {
-        val widths = intArrayOf(160, 110, 500, 150, 150)
+        val widths = intArrayOf(160, 110, 140, 440, 150, 150)
         for (i in widths.indices) {
             val column = treeTable.columnModel.getColumn(i)
             column.preferredWidth = widths[i]
@@ -755,7 +760,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     /** The saved sort, or the single column an older version saved, carried over once. */
     private fun savedSortSpec(): SortSpec {
         settings.getValue(SORT_KEY)?.let { return SortSpecCodec.decode(it) }
-        val legacyField = sortFieldForColumn(settings.getInt(LEGACY_SORT_COLUMN_KEY, -1))
+        val legacyField = LEGACY_SORT_COLUMNS.getOrNull(settings.getInt(LEGACY_SORT_COLUMN_KEY, -1))
         val ascending = settings.getBoolean(LEGACY_SORT_ASCENDING_KEY, true)
         settings.unsetValue(LEGACY_SORT_COLUMN_KEY)
         settings.unsetValue(LEGACY_SORT_ASCENDING_KEY)

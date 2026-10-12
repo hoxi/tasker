@@ -55,7 +55,7 @@ class SortRuleChoice(
 
         /** The assignee ranking, starting as "my issues first". */
         val ASSIGNEE: SortRuleChoice = SortRuleChoice(
-            label = "Assignee",
+            label = "Assignee ranking",
             allServers = false,
             isUsed = { spec -> spec.rules.any { it is AssigneeSortRule } },
             create = { AssigneeSortRule(listOf(PersonMatcher.Me)) },
