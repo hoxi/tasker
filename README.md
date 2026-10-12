@@ -51,6 +51,11 @@ Grouping, closed issues, the task limit and the sort column are remembered per p
 Servers load in parallel and the tree fills in as each one answers, so a slow tracker never holds up the rest. One that
 fails says so on its own row and leaves the others alone.
 
+Everything read from a server — the lists, and each task's details, comments, fields and pull requests — is kept for five
+minutes. Toggling *Show Closed Issues* or lowering the task limit shows a list already held instead of asking every
+server again, and revisiting a task is instant. Anything older is still shown straight away, and read again in the
+background. **Refresh** always asks every server afresh.
+
 ## The details pane
 
 ![Details pane](docs/images/details-pane.png)
