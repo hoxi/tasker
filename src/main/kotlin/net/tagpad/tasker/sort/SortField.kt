@@ -78,12 +78,18 @@ object SortFields {
 
     val SERVER = SortField("server", "Server", FieldKind.TEXT, allServers = true, { it.serverName }, NATURAL)
 
+    /** By the first assignee's name; unassigned and unknown rows have none, and go last. */
+    val ASSIGNEE = SortField(
+        "assignee", "Assignee", FieldKind.TEXT, allServers = false,
+        { it.assignees.firstOrNull()?.name }, NATURAL,
+    )
+
     /** Most urgent first when ascending: a lower rank is more urgent. */
     val PRIORITY = SortField(
         "priority", "Priority", FieldKind.PRIORITY, allServers = false, { it.priority }, compareBy { it.rank },
     )
 
-    val ALL: List<SortField<*>> = listOf(ID, SUMMARY, STATUS, CREATED, UPDATED, SERVER, PRIORITY)
+    val ALL: List<SortField<*>> = listOf(ID, SUMMARY, STATUS, CREATED, UPDATED, SERVER, ASSIGNEE, PRIORITY)
 
     fun byId(id: String): SortField<*>? = ALL.firstOrNull { it.id == id }
 

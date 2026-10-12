@@ -46,7 +46,7 @@ data class AssigneeSortRule(
     val others: OthersPlacement = OthersPlacement.AFTER_BY_NAME,
 ) : SortRule {
 
-    override val description: String get() = "Assignee"
+    override val description: String get() = "Assignee ranking"
 
     override fun comparator(): Comparator<SortableRow> = Comparator { a, b ->
         val pa = place(a)

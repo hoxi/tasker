@@ -43,7 +43,8 @@ id and uses it wherever it comes from.
 
 Opens as the **Tasks** tool window at the bottom of the IDE.
 
-- **Columns** — ID, Status, Summary, Updated, Created. Click a header to sort by that column, Shift+click to add it as a
+- **Columns** — ID, Status, Assignee, Summary, Updated, Created. Assignee comes from the GitHub, GitLab, Jira and
+  YouTrack adapters, and is blank for other servers. Click a header to sort by that column, Shift+click to add it as a
   further sort; drag to reorder anything except ID, which stays pinned to the left because it carries the tree.
 - **Sorting** — the *Sort* button opens a popup for sorting by several fields at once: drag the rules into order, pick
   each one's direction ("Newest first", "Highest first"), and rank assignees, for example *Me*, then a colleague, then
