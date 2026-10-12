@@ -18,6 +18,7 @@ import net.tagpad.tasker.LinkedIssue
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.TaskDecoration
+import net.tagpad.tasker.TaskDetails
 import net.tagpad.tasker.TaskAssignee
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskEditors
@@ -26,6 +27,7 @@ import net.tagpad.tasker.TaskLabel
 import net.tagpad.tasker.TaskPriority
 import net.tagpad.tasker.ThreadedComment
 import net.tagpad.tasker.addIfPresent
+import net.tagpad.tasker.attempt
 import net.tagpad.tasker.baseUrlOrNull
 import net.tagpad.tasker.basicAuth
 import net.tagpad.tasker.credentialsOrNull
@@ -104,6 +106,44 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
             .orEmpty()
     }
 
+    override val readsDetailsAtOnce: Boolean get() = true
+
+    /**
+     * [extras] and the comments in one request: the issue with just those fields, and Jira's own HTML
+     * rendering of them alongside. The comments embedded in an issue can stop short of the whole thread on
+     * a long one, and a server may leave the rendering out; either way they are read from the comment
+     * endpoint instead, as [comments] does.
+     */
+    override fun details(task: Task): TaskDetails {
+        val url = "${requireEndpoint(task)}?fields=$EXTRA_FIELDS,comment&expand=renderedFields"
+        val issue = readJsonObject(url, headers())
+        rememberIssueId(issue)
+        val fields = issue.objectOrNull("fields") ?: JsonObject()
+        return TaskDetails(
+            extras = attempt { extrasFrom(fields) },
+            comments = attempt { embeddedComments(issue) ?: comments(task) },
+        )
+    }
+
+    /** The comments [issue] carries, with their rendering; null when that isn't all of them, or isn't rendered. */
+    private fun embeddedComments(issue: JsonObject): List<Comment>? {
+        val held = issue.objectOrNull("fields")?.objectOrNull("comment") ?: return null
+        val raw = held.get("comments")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject } ?: return null
+        val total = held.get("total")?.asIntOrNull() ?: raw.size
+        if (raw.size < total) return null
+        val rendered = issue.objectOrNull("renderedFields")?.objectOrNull("comment")?.get("comments")
+            ?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { it.takeIf { e -> e.isJsonObject }?.asJsonObject }
+            ?.associate { it.idOrEmpty("id") to it.stringOrEmpty("body") }
+            ?: return null
+        val me = currentUser()
+        return raw.map { comment ->
+            val html = rendered[comment.idOrEmpty("id")].orEmpty()
+            JiraComment(comment.deepCopy().apply { addProperty("renderedBody", html) }, me)
+        }
+    }
+
     override fun canEditComment(task: Task, comment: Comment): Boolean =
         (comment as? JiraComment)?.isMine == true && issueEndpoint(task) != null
 
@@ -175,9 +215,10 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
     override fun pullRequests(task: Task): List<LinkedPullRequest> {
         val endpoint = issueEndpoint(task) ?: return emptyList()
         val site = repository.baseUrlOrNull() ?: return emptyList()
-        // dev-status wants the numeric issue id, not the key.
-        val issueId = readJsonObject("$endpoint?fields=summary", headers()).idOrEmpty("id")
-            .takeIf { it.isNotBlank() } ?: return emptyList()
+        // dev-status wants the numeric issue id, not the key; the list fetch has usually learnt it already.
+        val issueId = ISSUE_IDS[endpoint]
+            ?: readJsonObject("$endpoint?fields=summary", headers()).also(::rememberIssueId).idOrEmpty("id")
+                .takeIf { it.isNotBlank() } ?: return emptyList()
 
         val summary = readJsonObject("$site/rest/dev-status/latest/issue/summary?issueId=$issueId", headers())
         val byType = summary.objectOrNull("summary")?.objectOrNull("pullrequest")?.objectOrNull("byInstanceType")
@@ -226,9 +267,12 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
      */
     override fun extras(task: Task): TaskExtras {
         val endpoint = issueEndpoint(task) ?: return TaskExtras()
-        val fields = readJsonObject("$endpoint?fields=assignee,reporter,priority,labels", headers())
+        val fields = readJsonObject("$endpoint?fields=$EXTRA_FIELDS", headers())
             .objectOrNull("fields") ?: return TaskExtras()
+        return extrasFrom(fields)
+    }
 
+    private fun extrasFrom(fields: JsonObject): TaskExtras {
         val priority = fields.objectOrNull("priority")?.let { p ->
             p.stringOrEmpty("name").takeIf { it.isNotBlank() }
                 ?.let { TaskPriority(it, icon(p.stringOrEmpty("iconUrl"))) }
@@ -275,6 +319,7 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
             for (issue in search(base, "key in (${page.joinToString(",")})", fields, page.size)) {
                 val key = issue.stringOrEmpty("key").takeIf { it.isNotBlank() } ?: continue
                 found[key] = issue
+                rememberIssueId(issue)
             }
         }
 
@@ -454,6 +499,13 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
         }
     }
 
+    /** Keeps [issue]'s numeric id for [pullRequests], keyed by its endpoint, which names the site and the key. */
+    private fun rememberIssueId(issue: JsonObject) {
+        val id = issue.idOrEmpty("id").takeIf { it.isNotBlank() } ?: return
+        val key = issue.stringOrEmpty("key").takeIf { KEY.matches(it) } ?: return
+        apiBase()?.let { ISSUE_IDS["$it/issue/$key"] = id }
+    }
+
     private fun updateField(task: Task, field: String, value: String) {
         val payload = JsonObject().apply { add("fields", JsonObject().apply { addProperty(field, value) }) }
         HttpRequests.put(requireEndpoint(task), JSON_CONTENT_TYPE).sendJson(payload, headers())
@@ -546,6 +598,15 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         /** The custom field type Jira Software creates "Epic Link" with, on Server and Data Center. */
         const val EPIC_LINK_TYPE = "com.pyxis.greenhopper.jira:gh-epic-link"
+
+        /** What [extras] reads. */
+        const val EXTRA_FIELDS = "assignee,reporter,priority,labels"
+
+        /**
+         * Each issue's numeric id by its REST endpoint, as the list fetch and the detail reads come across
+         * them, so [pullRequests] needn't ask. Ids never change, so nothing here goes stale.
+         */
+        val ISSUE_IDS = ConcurrentHashMap<String, String>()
 
         /** What a linked issue is shown with. */
         const val LINKED_FIELDS = "summary,status,issuetype"

@@ -879,17 +879,32 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
          */
         selectionSettleTimer = Timer(SELECTION_SETTLE_MS) {
             if (requestId != detailRequestId) return@Timer
-            loadExtraProperties(task, repository, key, requestId)
             loadPullRequests(task, repository, key, requestId)
-            if (!current) loadDetails(task, repository, key, requestId)
+            val editor = TaskEditors.forRepository(repository)
+            if (editor?.readsDetailsAtOnce == true) {
+                loadDetailsAtOnce(editor, task, repository, key, requestId, current)
+                if (!current) loadDetails(task, repository, key, requestId, withComments = false)
+            } else {
+                loadExtraProperties(task, repository, key, requestId)
+                if (!current) loadDetails(task, repository, key, requestId)
+            }
         }.apply {
             isRepeats = false
             start()
         }
     }
 
-    /** Reads the task in full, with its comments, and renders the result. */
-    private fun loadDetails(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
+    /**
+     * Reads the task in full and renders the result — with its comments, unless [withComments] is false
+     * because [loadDetailsAtOnce] is reading them alongside.
+     */
+    private fun loadDetails(
+        task: Task,
+        repository: TaskRepository,
+        key: TaskKey,
+        requestId: Int,
+        withComments: Boolean = true,
+    ) {
         AppExecutorUtil.getAppExecutorService().execute {
             /*
              * A null answer is not a failure: findTask is @Nullable, and a connector that can't find the
@@ -904,21 +919,21 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
             } catch (ex: Exception) {
                 null
             }
-            val comments = full?.let { loadComments(repository, it) }
+            val comments = if (withComments) full?.let { loadComments(repository, it) } else null
             onEdt {
                 /*
                  * Cache before the staleness check: the result is still valid even if the selection moved
                  * on. Failures aren't cached, so they're retried on the next visit rather than sticking.
                  */
-                if (full != null && comments != null) {
-                    detailCache[key] = full
-                    commentCache[key] = comments
-                }
+                if (full != null && (comments != null || !withComments)) detailCache[key] = full
+                if (comments != null) commentCache[key] = comments
                 if (requestId != detailRequestId) return@onEdt // selection moved on; its own timer now owns the pane
-                cancelLoadingLabel()
-                showingLoadingComments = false
+                if (withComments) {
+                    cancelLoadingLabel()
+                    showingLoadingComments = false
+                }
                 // A failed re-read leaves what was held on screen rather than falling back to the list's copy.
-                showDetails(full ?: detailCache[key] ?: task, repository, key, loadingComments = false)
+                showDetails(full ?: detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
             }
         }
     }
@@ -1051,6 +1066,45 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 if (!extras.isEmpty()) {
                     showDetails(detailCache[key] ?: task, repository, key, loadingComments = showingLoadingComments)
                 }
+            }
+        }
+    }
+
+    /**
+     * Asks [editor] for the comments and the fields [Task] has no room for in one go — see
+     * [TaskEditor.details] — for an adapter that reads them in one request. Skipped while both are fresh:
+     * the comments with the task they were read for, the fields on their own.
+     */
+    private fun loadDetailsAtOnce(
+        editor: TaskEditor,
+        task: Task,
+        repository: TaskRepository,
+        key: TaskKey,
+        requestId: Int,
+        current: Boolean,
+    ) {
+        if (current && propertyCache.isFresh(key, maxAgeMs())) return
+
+        AppExecutorUtil.getAppExecutorService().execute {
+            val details = try {
+                editor.details(task)
+            } catch (ce: ProcessCanceledException) {
+                return@execute
+            } catch (ex: Exception) {
+                LOG.info("Could not read details for ${task.presentableId} on ${repository.presentableName}", ex)
+                null
+            }
+            val id = task.presentableId
+            details?.extras?.exceptionOrNull()?.let { LOG.info("Could not read fields for $id", it) }
+            details?.comments?.exceptionOrNull()?.let { LOG.warn("Could not load comments for $id", it) }
+            onEdt {
+                // Successes only, as everywhere: a failure is read again on the next visit.
+                details?.extras?.getOrNull()?.let { propertyCache[key] = it }
+                details?.comments?.getOrNull()?.let { commentCache[key] = it }
+                if (requestId != detailRequestId) return@onEdt // selection moved on
+                cancelLoadingLabel()
+                showingLoadingComments = false
+                showDetails(detailCache[key] ?: task, repository, key, loadingComments = false)
             }
         }
     }
