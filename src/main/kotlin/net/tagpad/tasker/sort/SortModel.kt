@@ -9,6 +9,9 @@ import java.util.EventListener
  * next. Controls read [spec], replace it through [update], and hear about each other's changes through
  * [addListener]; none of them knows the others exist, or what the sort is applied to.
  *
+ * [saved] is a sort the user kept on purpose, apart from the current one that every click changes: a stray
+ * header click can then be undone with [restore].
+ *
  * [choices] is what can be added to a sort; [people] the names an assignee rule can offer. Both describe the
  * data, so the owner of the data supplies them.
  */
@@ -19,8 +22,19 @@ interface SortModel {
     /** Replaces the sort. Listeners are told only when [spec] actually changes. */
     fun update(spec: SortSpec)
 
-    /** Calls [listener] with each new spec, until [parent] is disposed. */
+    /** Calls [listener] with each new spec, and when [saved] changes, until [parent] is disposed. */
     fun addListener(parent: Disposable, listener: (SortSpec) -> Unit)
+
+    /** The sort last kept with [save]; null until one has been. */
+    val saved: SortSpec?
+
+    /** Keeps the current [spec] as [saved]. */
+    fun save()
+
+    /** Goes back to [saved], if there is one. */
+    fun restore() {
+        saved?.let(::update)
+    }
 
     /** The rules that can be added, in the order to offer them. */
     val choices: List<SortRuleChoice>
@@ -70,13 +84,16 @@ class SortRuleChoice(
 }
 
 /**
- * A [SortModel] that keeps the spec in memory and hands every change to [persist] as well as to listeners.
- * [peopleSource] is asked afresh each time, since the rows it reads change.
+ * A [SortModel] that keeps the spec in memory and hands every change to [persist] as well as to listeners,
+ * and the saved spec likewise to [persistSaved]. [peopleSource] is asked afresh each time, since the rows it
+ * reads change.
  */
 class DefaultSortModel(
     initial: SortSpec,
+    saved: SortSpec? = null,
     override val choices: List<SortRuleChoice> = SortRuleChoice.DEFAULT,
     private val persist: (SortSpec) -> Unit = {},
+    private val persistSaved: (SortSpec) -> Unit = {},
     private val peopleSource: () -> List<String> = { emptyList() },
 ) : SortModel {
 
@@ -89,6 +106,16 @@ class DefaultSortModel(
         if (spec == this.spec) return
         this.spec = spec
         persist(spec)
+        listeners.multicaster.specChanged(spec)
+    }
+
+    override var saved: SortSpec? = saved
+        private set
+
+    override fun save() {
+        if (spec == saved) return
+        saved = spec
+        persistSaved(spec)
         listeners.multicaster.specChanged(spec)
     }
 
