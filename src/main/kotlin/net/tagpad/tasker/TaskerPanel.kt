@@ -51,6 +51,7 @@ import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.KeyboardFocusManager
 import java.awt.event.MouseAdapter
+import java.awt.event.HierarchyEvent
 import java.awt.event.MouseEvent
 import java.beans.PropertyChangeListener
 import java.net.SocketTimeoutException
@@ -76,7 +77,7 @@ private data class CachedList(
     val decorations: Map<String, TaskDecoration>,
     val fetchedAt: Long,
 ) {
-    fun isFresh(): Boolean = System.currentTimeMillis() - fetchedAt < CACHE_TTL_MS
+    fun isFresh(maxAgeMs: Long): Boolean = System.currentTimeMillis() - fetchedAt < maxAgeMs
 }
 
 /** A list fetch under way: the limit it asked for, and when it started. Compared by identity. */
@@ -92,8 +93,11 @@ private class TimedCache<V> {
         entries[key] = value to System.currentTimeMillis()
     }
 
-    fun isFresh(key: TaskKey): Boolean =
-        entries[key]?.let { System.currentTimeMillis() - it.second < CACHE_TTL_MS } == true
+    fun isFresh(key: TaskKey, maxAgeMs: Long): Boolean =
+        entries[key]?.let { System.currentTimeMillis() - it.second < maxAgeMs } == true
+
+    /** Whether something is held for [key] but has grown older than [maxAgeMs]. */
+    fun isStale(key: TaskKey, maxAgeMs: Long): Boolean = key in entries && !isFresh(key, maxAgeMs)
 
     fun remove(key: TaskKey) {
         entries.remove(key)
@@ -105,12 +109,6 @@ private class TimedCache<V> {
         entries.keys.removeIf { it.repository !in servers }
     }
 }
-
-/**
- * How long anything read from a server counts as current: lists, details, comments, extra fields, linked
- * pull requests. Older ones are still shown at once, and read again in the background.
- */
-private const val CACHE_TTL_MS = 5 * 60_000L
 
 /**
  * Tool window content: a multi-column [TreeTable] of tasks (ID / Status / Summary / Updated / Created)
@@ -143,7 +141,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     /**
      * Every server list fetched this session, per server and per closed-issues setting, with when it was
      * fetched — so toggling Show Closed or lowering the task limit can show a list already held instead
-     * of asking every server again. See [CACHE_TTL_MS] for when a held list is read again. EDT-only.
+     * of asking every server again. See [maxAgeMs] for when a held list is read again. EDT-only.
      */
     private val listCache = HashMap<ListKey, CachedList>()
 
@@ -177,7 +175,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
      * Tasks whose details (comments + full description) have already been resolved. Membership *is* the
      * loaded-flag: `TaskRepository.findTask` does no caching of its own (it's abstract, and every
      * implementation issues a live request), and an empty comment list is otherwise indistinguishable
-     * from "not fetched yet". Timestamped, so an entry older than [CACHE_TTL_MS] is shown and read again.
+     * from "not fetched yet". Timestamped, so an entry older than [maxAgeMs] is shown and read again.
      * Cleared by a forced [reload]. EDT-only.
      */
     private val detailCache = TimedCache<Task>()
@@ -214,6 +212,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     /** Reloads once the task limit has stopped changing. EDT-only. */
     private val limitRefreshTimer = Timer(LIMIT_SETTLE_MS) { reload(force = false) }.apply { isRepeats = false }
 
+    /** Checks for anything grown stale while the tool window is showing; see [refreshStale]. EDT-only. */
+    private val staleCheckTimer = Timer(STALE_CHECK_MS) { refreshStale() }
+
     /** Pending reads for the selected task, until the selection has settled. EDT-only. */
     private var selectionSettleTimer: Timer? = null
 
@@ -239,6 +240,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         /** The Task Management plugin's own Tools menu group, reused as a toolbar dropdown. */
         const val TASKS_AND_CONTEXTS_GROUP = "tasks.and.contexts"
         const val DEFAULT_LIMIT = 30
+
+        /** Each server is asked for this many issues, so the list can hold up to that many per server. */
+        const val LIMIT_TOOLTIP = "How many issues to request from each server. Lower loads faster."
         const val MAX_LIMIT = 500
 
         const val ACTIVE_WINDOW_PROPERTY = "activeWindow"
@@ -248,6 +252,9 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         const val ISSUE_LIMIT_KEY = "tasker.issueLimit"
         const val SORT_COLUMN_KEY = "tasker.sortColumn"
         const val SORT_ASCENDING_KEY = "tasker.sortAscending"
+
+        /** How often [refreshStale] looks for anything older than the platform's update interval. */
+        const val STALE_CHECK_MS = 60_000
 
         /** How long a selection has to stay put before its task is read from the server. */
         const val SELECTION_SETTLE_MS = 150
@@ -339,6 +346,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         toolbar = createToolbar()
         setContent(splitter)
 
+        // Catches up as soon as the tool window is shown again, having asked nothing of the servers while hidden.
+        addHierarchyListener { e ->
+            val showingChanged = e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L
+            if (showingChanged && isShowing) refreshStale()
+        }
+        staleCheckTimer.start()
+
         showMessage("Loading…")
         reload(force = false)
     }
@@ -398,8 +412,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         val actionToolbar = ActionManager.getInstance().createActionToolbar("TaskerToolbar", group, true)
         actionToolbar.targetComponent = treeTable
 
-        // Task limit spinner: how many issues to request per server (lower = faster loads).
-        val spinner = JBIntSpinner(issueLimit, 1, MAX_LIMIT)
+        val spinner = JBIntSpinner(issueLimit, 1, MAX_LIMIT).apply { toolTipText = LIMIT_TOOLTIP }
         spinner.addChangeListener {
             val value = spinner.number
             if (value != issueLimit) {
@@ -410,7 +423,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         }
         val limitPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
             isOpaque = false
-            add(JBLabel("Task limit:"))
+            add(JBLabel("Task list limit:").apply { toolTipText = LIMIT_TOOLTIP })
             add(spinner)
         }
 
@@ -442,10 +455,45 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
+     * How long anything read from a server counts as current: lists, details, comments, extra fields,
+     * linked pull requests. Task Management's own "Update issue cache every N minutes" setting, so Tasker
+     * goes stale exactly as often as the platform's cache does, and never while that updating is off.
+     * Read afresh each time, so a change in Settings applies from the next check.
+     */
+    private fun maxAgeMs(): Long = IssueCacheSettings.read(project).maxAgeMs
+
+    /**
+     * Reads again, in the background, whatever on screen has grown older than [maxAgeMs]: each server's
+     * list, and the selected task's details. Runs every [STALE_CHECK_MS] while the tool window is showing,
+     * and as soon as it is shown again; nothing is asked of a server while it is hidden.
+     *
+     * Only stale lists are fetched, and nothing is redrawn until one of them answers — the tree is rebuilt
+     * from scratch on each redraw, and doing that every minute for nothing would undo the user's collapsed
+     * groups and scroll position.
+     */
+    private fun refreshStale() {
+        if (disposed || !isShowing) return
+        val maxAge = maxAgeMs()
+        for (repo in servers) {
+            if (!repo.isConfigured) continue
+            val held = listCache[ListKey(repo, includeClosed)] ?: continue
+            if (!held.isFresh(maxAge)) loadServer(repo, includeClosed, issueLimit, force = false)
+        }
+        val selected = selectedTaskNode() ?: return
+        val key = TaskKey(selected.repository, selected.task.id)
+        val staleDetails = detailCache.isStale(key, maxAge) || propertyCache.isStale(key, maxAge) ||
+            pullRequestCache.isStale(key, maxAge)
+        if (staleDetails) {
+            currentDetailKey = null // same task: the pane redraws in place, keeping any edit in progress
+            updateDetailsFromSelection()
+        }
+    }
+
+    /**
      * Shows every server's list for the current settings, fetching the ones that need it.
      *
      * A list already held for the current closed-issues setting is shown at once, cut down to the task
-     * limit, and read again in the background only if it is older than [CACHE_TTL_MS] or was fetched for
+     * limit, and read again in the background only if it is older than [maxAgeMs] or was fetched for
      * a lower limit. [force] — the Refresh button — drops everything held, task details included, and
      * reads every server afresh. Servers load in parallel and fill the tree as each answers, so one slow
      * server never holds up the others.
@@ -468,7 +516,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         for (repo in servers) {
             if (!repo.isConfigured) continue
             val held = listCache[ListKey(repo, includeClosed)]
-            val current = held != null && held.limit >= issueLimit && held.isFresh()
+            val current = held != null && held.limit >= issueLimit && held.isFresh(maxAgeMs())
             if (force || !current) loadServer(repo, includeClosed, issueLimit, force)
         }
         redisplay()
@@ -731,8 +779,8 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 detailCache[key] = it
                 commentCache[key] = it.comments.toList()
             }
-        // Shown however old; read again below, quietly, once older than CACHE_TTL_MS.
-        val current = resolved != null && detailCache.isFresh(key)
+        // Shown however old; read again below, quietly, once older than maxAgeMs.
+        val current = resolved != null && detailCache.isFresh(key, maxAgeMs())
         showDetails(resolved ?: task, repository, key, loadingComments = false)
         if (resolved == null) {
             /*
@@ -903,13 +951,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
     /**
      * Asks the provider adapter for fields [Task] has no room for, again once what is held is older than
-     * [CACHE_TTL_MS].
+     * [maxAgeMs].
      *
      * Runs alongside the comment fetch rather than after it: the two are independent reads, and chaining
      * them would make the assignee wait on comments it has nothing to do with.
      */
     private fun loadExtraProperties(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
-        if (propertyCache.isFresh(key)) return
+        if (propertyCache.isFresh(key, maxAgeMs())) return
         val editor = TaskEditors.forRepository(repository) ?: return
 
         AppExecutorUtil.getAppExecutorService().execute {
@@ -932,12 +980,12 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
     }
 
     /**
-     * Asks the adapter for linked pull and merge requests, again once older than [CACHE_TTL_MS], alongside
-     * the other detail reads. A failure is logged rather than shown: for Jira this rides on an unofficial API, and
-     * a missing section is the honest outcome when it doesn't answer.
+     * Asks the adapter for linked pull and merge requests, again once older than [maxAgeMs], alongside
+     * the other detail reads. A failure is logged rather than shown: for Jira this rides on an unofficial
+     * API, and a missing section is the honest outcome when it doesn't answer.
      */
     private fun loadPullRequests(task: Task, repository: TaskRepository, key: TaskKey, requestId: Int) {
-        if (pullRequestCache.isFresh(key)) return
+        if (pullRequestCache.isFresh(key, maxAgeMs())) return
         val editor = TaskEditors.forRepository(repository) ?: return
 
         AppExecutorUtil.getAppExecutorService().execute {
@@ -967,6 +1015,7 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
         disposed = true
         selectionSettleTimer?.stop()
         limitRefreshTimer.stop()
+        staleCheckTimer.stop()
         KeyboardFocusManager.getCurrentKeyboardFocusManager()
             .removePropertyChangeListener(ACTIVE_WINDOW_PROPERTY, windowActivationListener)
         cancelLoadingLabel()

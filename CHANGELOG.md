@@ -10,5 +10,6 @@
   own comments on GitHub, Jira and YouTrack
 - Switch to a task or change its status from the right-click menu, offering only the transitions the server allows
 - Every other Task Management tracker is listed and shown too, with what its connector provides
-- Lists and task details are kept for five minutes, so changing the view doesn't ask every server again
+- Lists and task details are kept as long as Task Management's own issue cache, and refreshed on the same interval while
+  the tool window is showing, so changing the view doesn't ask every server again
 - View settings are remembered per project, and the list reloads by itself after the servers are reconfigured
