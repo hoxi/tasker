@@ -50,8 +50,9 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
   each one's direction ("Newest first", "Highest first"), and rank assignees, for example *Me*, then a colleague, then
   everyone else. Status sorts in workflow order, empty values always go last, and ties keep each server's own order.
   Assignee and priority come from the GitHub, GitLab, Jira and YouTrack adapters; other servers' rows sort after
-  theirs. Changes apply as you make them, and *Reset* goes back to each server's own order. *Done* saves the sort,
-  and *Restore* brings the saved one back — after an accidental header click, say.
+  theirs. Changes apply as you make them, and *Reset* goes back to each server's own order, offering *Undo reset*
+  until the sort changes again. *Done* (or Enter) saves the sort, and *Restore* brings the saved one back — after an
+  accidental header click, say.
 - **Grouping** — tasks sit under their server by default. Turn *Group by Server* off for a flat list, where each row
   shows its server's icon instead.
 - **Status** — rendered as a coloured badge using the tracker's own state name, not a flattened approximation of it.

@@ -1,6 +1,7 @@
 package net.tagpad.tasker.sort.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.ui.laf.darcula.ui.DarculaButtonUI
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.popup.JBPopup
 import com.intellij.openapi.ui.popup.JBPopupFactory
@@ -20,13 +21,16 @@ import net.tagpad.tasker.sort.SortRuleChoice
 import net.tagpad.tasker.sort.SortSpec
 import java.awt.BorderLayout
 import java.awt.FlowLayout
+import java.awt.KeyboardFocusManager
 import java.awt.event.ActionEvent
 import java.awt.event.ActionListener
 import java.awt.event.KeyEvent
 import javax.swing.AbstractAction
+import javax.swing.AbstractButton
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.JButton
+import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
@@ -34,8 +38,9 @@ import javax.swing.KeyStroke
 
 /**
  * The sort popup: one row per rule, in order — drag handle, place, what to sort by, how, remove — then
- * "+ Add sort", and Reset, Restore and Done at the foot. Done keeps the sort as the model's saved one, and
- * Restore goes back to it — after a stray header click, say.
+ * "+ Add sort", and Reset, Restore and Done at the foot. Done, the default button, keeps the sort as the
+ * model's saved one, and Restore goes back to it — after a stray header click, say. Reset offers to undo itself
+ * until the sort changes again, since it throws every rule away at once.
  *
  * It works entirely through [SortModel]: it shows the model's spec, writes every change straight back to it
  * (the sort applies live, as in Notion or Airtable), and follows changes made elsewhere while it is open, such
@@ -56,6 +61,17 @@ class SortPopup(private val model: SortModel) {
         toolTipText = "Go back to the sort as it was when Done was last pressed"
     }
 
+    private val resetLink = ActionLink("Reset") { resetOrUndo() }
+
+    /** The sort Reset threw away, while "Undo reset" can still bring it back. */
+    private var beforeReset: SortSpec? = null
+
+    private val doneButton = JButton("Done").apply {
+        toolTipText = "Keep this sort, to restore later"
+        putClientProperty(DarculaButtonUI.DEFAULT_STYLE_KEY, true)
+        addActionListener { done() }
+    }
+
     private var popup: JBPopup? = null
 
     /** Set while this popup writes to the model, so it doesn't redraw for its own change. */
@@ -69,11 +85,12 @@ class SortPopup(private val model: SortModel) {
             .setCancelOnClickOutside(true)
             .setMovable(false)
             .setResizable(false)
+            .setKeyEventHandler(::onKey)
             .createPopup()
         popup = created
         // Follows changes made by the other sort controls while open, such as a header click.
         model.addListener(created) { spec ->
-            if (!applying && spec != rulesShown()) render(spec) else updateRestore()
+            if (!applying && spec != rulesShown()) render(spec) else updateFooter()
         }
         created.showUnderneathOf(anchor)
     }
@@ -94,15 +111,9 @@ class SortPopup(private val model: SortModel) {
             add(
                 JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
                     isOpaque = false
-                    add(ActionLink("Reset") { apply(SortSpec()) })
+                    add(resetLink)
                     add(restoreLink)
-                    add(JButton("Done").apply {
-                        toolTipText = "Keep this sort, to restore later"
-                        addActionListener {
-                            this@SortPopup.model.save()
-                            popup?.cancel()
-                        }
-                    })
+                    add(doneButton)
                 },
                 BorderLayout.EAST,
             )
@@ -122,7 +133,7 @@ class SortPopup(private val model: SortModel) {
         if (spec.isEmpty) rows.add(emptyHint)
         spec.rules.forEach { rows.add(RuleRow(it, spec)) }
         addLink.isVisible = unusedChoices(spec).isNotEmpty()
-        updateRestore()
+        updateFooter()
         rows.revalidate()
         rows.repaint()
         popup?.pack(true, true)
@@ -139,11 +150,48 @@ class SortPopup(private val model: SortModel) {
         } finally {
             applying = false
         }
-        if (rerender) render(spec) else updateRestore()
+        if (rerender) render(spec) else updateFooter()
     }
 
-    /** Restore is offered only when there is a saved sort to go back to, other than the one shown. */
-    private fun updateRestore() {
+    private fun done() {
+        model.save()
+        popup?.cancel()
+    }
+
+    /**
+     * Enter is Done's, as a dialog's default button — unless the focus is on something Enter already means
+     * something to: another button or link, or a dropdown that is open. Ctrl+Enter is Done's regardless.
+     */
+    private fun onKey(e: KeyEvent): Boolean {
+        if (e.id != KeyEvent.KEY_PRESSED || e.keyCode != KeyEvent.VK_ENTER) return false
+        val focused = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+        val forced = e.isControlDown || e.isMetaDown
+        val taken = focused is AbstractButton && focused !== doneButton ||
+            (focused as? JComboBox<*>)?.isPopupVisible == true
+        if (!forced && taken) return false
+        done()
+        return true
+    }
+
+    /** Reset clears every rule; clicked again before anything else changes, it puts them back. */
+    private fun resetOrUndo() {
+        val undo = beforeReset
+        if (undo != null) {
+            apply(undo)
+        } else {
+            beforeReset = model.spec
+            apply(SortSpec())
+        }
+    }
+
+    /**
+     * Reset turns into "Undo reset" for as long as the sort is the empty one it left; Restore is offered only
+     * when there is a saved sort to go back to, other than the one shown.
+     */
+    private fun updateFooter() {
+        if (!model.spec.isEmpty) beforeReset = null
+        resetLink.text = if (beforeReset != null) "Undo reset" else "Reset"
+        resetLink.isEnabled = beforeReset != null || !model.spec.isEmpty
         val saved = model.saved
         restoreLink.isEnabled = saved != null && saved != model.spec
     }
