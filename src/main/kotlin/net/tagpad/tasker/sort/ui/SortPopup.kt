@@ -78,8 +78,13 @@ class SortPopup(private val model: SortModel) {
     private var applying = false
 
     fun show(anchor: JComponent) {
+        /*
+         * Focus starts on the panel itself, which draws no focus ring, rather than on a control that would wear
+         * one from the moment the popup opens. Tab moves on to the controls; Enter works anywhere, see [onKey].
+         */
+        val content = content().apply { isFocusable = true }
         val created = JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(content(), addLink)
+            .createComponentPopupBuilder(content, content)
             .setRequestFocus(true)
             .setFocusable(true)
             .setCancelOnClickOutside(true)
