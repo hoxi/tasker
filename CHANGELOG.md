@@ -14,3 +14,5 @@
 - Lists and task details are kept as long as Task Management's own issue cache, and refreshed on the same interval while
   the tool window is showing, so changing the view doesn't ask every server again
 - View settings are remembered per project, and the list reloads by itself after the servers are reconfigured
+- Requires the [Task Management](https://plugins.jetbrains.com/plugin/11545-task-management) plugin, which is no
+  longer bundled with the IDE from 2026.2: on 2026.2 and later, install it manually from the Marketplace first
