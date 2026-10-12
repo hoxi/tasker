@@ -70,8 +70,15 @@ private fun trackerStateName(task: Task): String? =
         ?.value?.value
         ?.takeIf { it.isNotBlank() }
 
-/** A date and time in the IDE's own format, as set under Settings | Appearance & Behavior | System Settings. */
-internal fun formatDate(date: Date?): String = date?.let(DateFormatUtil::formatDateTime).orEmpty()
+/**
+ * A date and time as the IDE shows them, following Settings | Appearance & Behavior | System Settings | Date
+ * Formats: its pattern and clock, and — when pretty formatting is on — "5 minutes ago", "Today 14:05" and
+ * "Yesterday 09:12" for recent ones. Those age, so whatever shows them must be redrawn now and then.
+ */
+internal fun formatDate(date: Date?): String = date?.let(DateFormatUtil::formatPrettyDateTime).orEmpty()
+
+/** A date and time in the IDE's format, never pretty: for text that isn't redrawn, so mustn't go stale. */
+internal fun formatExactDate(date: Date?): String = date?.let(DateFormatUtil::formatDateTime).orEmpty()
 
 /** ID column — this is the tree column (holds the expand handles and per-server grouping). */
 private class IdColumn : ColumnInfo<DefaultMutableTreeNode, Any>("ID") {

@@ -60,7 +60,9 @@ Opens as the **Tasks** tool window at the bottom of the IDE.
   switch.
 - **Closed issues** are hidden by default and greyed when shown.
 - **Task list limit** caps how many issues are requested from each server. Lower is faster; the default is 30.
-- **Dates** follow the IDE's own date format, as set under *Settings | Appearance & Behavior | System Settings*.
+- **Dates** follow the IDE's own date format, as set under *Settings | Appearance & Behavior | System Settings | Date
+  Formats*. With *pretty formatting* on there, recent ones read "5 minutes ago", "Today 14:05" or "Yesterday 09:12",
+  and keep up as time passes; the details pane shows the exact time on hover. Comment dates are always exact.
 
 Grouping, closed issues, the task list limit, the sort and the saved sort are remembered per project.
 

@@ -360,8 +360,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         if (!editingSummary) summaryText.text = shownSummary
         statusBadge.setStatus(status ?: statusText(task))
         renderBadges(labels)
-        createdField.setValue(formatDate(task.created))
-        updatedField.setValue(formatDate(task.updated))
+        refreshDates()
         renderMetaFields(task, extra, priority)
 
         shownDescription = task.description.orEmpty()
@@ -749,7 +748,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private fun bylineHtml(comment: Comment): String {
         val byline = listOfNotNull(
             comment.author?.takeIf { it.isNotBlank() },
-            comment.date?.let(::formatDate)?.takeIf { it.isNotBlank() },
+            // Exact: a "5 minutes ago" here would stay put while the comments are shown.
+            comment.date?.let(::formatExactDate)?.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
         val avatar = avatarUrl(comment)
         if (avatar == null && byline.isEmpty()) return ""
@@ -998,6 +998,16 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     }
 
     /** A caption above its value — the shape used for the Created / Updated columns. */
+    /**
+     * Redraws the shown task's dates, which may read "5 minutes ago" and so age; the exact date and time is
+     * in their tooltip.
+     */
+    fun refreshDates() {
+        val task = shownTask ?: return
+        createdField.setValue(formatDate(task.created), tooltip = formatExactDate(task.created))
+        updatedField.setValue(formatDate(task.updated), tooltip = formatExactDate(task.updated))
+    }
+
     private class MetaField(caption: String) : JPanel(BorderLayout(0, JBUI.scale(2))) {
 
         private val value = JBLabel()
@@ -1014,10 +1024,11 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             add(value, BorderLayout.CENTER)
         }
 
-        fun setValue(text: String, icon: Icon? = null) {
+        fun setValue(text: String, icon: Icon? = null, tooltip: String? = null) {
             val known = text.isNotBlank()
             value.text = if (known) text else "—"
             value.icon = icon.takeIf { known }
+            value.toolTipText = tooltip.takeIf { known && it != text }
             value.foreground = if (known) UIUtil.getLabelForeground() else muted()
         }
     }
