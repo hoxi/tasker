@@ -14,6 +14,8 @@ import net.tagpad.tasker.JSON_CONTENT_TYPE
 import net.tagpad.tasker.LinkedPullRequest
 import net.tagpad.tasker.PullRequestState
 import net.tagpad.tasker.ReactableComment
+import net.tagpad.tasker.TaskAssignee
+import net.tagpad.tasker.TaskDecoration
 import net.tagpad.tasker.TaskEditor
 import net.tagpad.tasker.TaskExtras
 import net.tagpad.tasker.TaskLabel
@@ -136,6 +138,38 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
         HttpRequests.patch(url, JSON_CONTENT_TYPE).sendJson(payload, headers())
     }
 
+    /**
+     * Who each listed issue is assigned to, for sorting the list by it — GitHub issues have no priority.
+     *
+     * GitHub can't look issues up by a list of numbers, so each repository's issues are paged through,
+     * most recently updated first as the connector lists them, until every listed one has been seen or
+     * [MAX_DECORATE_PAGES] have been read. An issue not reached is left undecorated, and sorts last.
+     */
+    override fun decorate(tasks: List<Task>): Map<String, TaskDecoration> {
+        val byRepository = tasks.mapNotNull { task -> endpoint(task)?.let { it to task } }
+            .groupBy({ it.first.substringBeforeLast("/issues/") }, { it.second })
+        val result = HashMap<String, TaskDecoration>()
+        for ((repositoryEndpoint, repositoryTasks) in byRepository) {
+            val me = currentUser(repositoryEndpoint)
+            val wanted = repositoryTasks.associateBy { requireEndpoint(it).substringAfterLast("/issues/") }
+            val seen = HashSet<String>()
+            for (page in 1..MAX_DECORATE_PAGES) {
+                val query = "state=all&sort=updated&direction=desc&per_page=$COMMENTS_PER_PAGE&page=$page"
+                val issues = readJsonObjects("$repositoryEndpoint/issues?$query", headers())
+                for (issue in issues) {
+                    val task = wanted[issue.idOrEmpty("number")] ?: continue
+                    seen += task.id
+                    val logins = issue.mapArray("assignees") { it.stringOrEmpty("login") }
+                    result[task.id] = TaskDecoration(
+                        assignees = logins.map { TaskAssignee(it, isMe = it.equals(me, ignoreCase = true)) },
+                    )
+                }
+                if (issues.size < COMMENTS_PER_PAGE || seen.size == wanted.size) break
+            }
+        }
+        return result
+    }
+
     /** The token owner's login, from the API host the issue [endpoint] lives on. */
     private fun currentUser(endpoint: String): String? = repository.currentUserId {
         readJsonObject(endpoint.substringBefore("/repos/") + "/user", headers()).stringOrEmpty("login")
@@ -247,6 +281,9 @@ class GitHubTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         /** A thousand comments; a thread past that is better read on github.com. */
         const val MAX_COMMENT_PAGES = 10
+
+        /** Pages of a repository's issues read to decorate a list; see [decorate]. */
+        const val MAX_DECORATE_PAGES = 5
 
         /** Timeline events, in pages of [COMMENTS_PER_PAGE]; cross-references past these are rare. */
         const val MAX_TIMELINE_PAGES = 3
