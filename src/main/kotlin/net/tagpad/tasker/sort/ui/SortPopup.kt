@@ -145,7 +145,7 @@ class SortPopup(private val model: SortModel) {
     private fun choiceFor(rule: SortRule): SortRuleChoice? =
         model.choices.firstOrNull { it.isUsed(SortSpec(listOf(rule))) }
 
-    /** Renumbers the rows after a drag, and applies their new order. */
+    /** Renumbers the rows once one has been dropped somewhere new, and applies their new order. */
     private fun rowsReordered() {
         rows.components.filterIsInstance<RuleRow>().forEachIndexed { index, row -> row.setPlace(index + 1) }
         apply(rulesShown(), rerender = false)
@@ -165,8 +165,15 @@ class SortPopup(private val model: SortModel) {
 
         init {
             isOpaque = false
-            val handle = JBLabel(AllIcons.General.Drag).apply { toolTipText = "Drag to reorder (Alt+↑/↓)" }
-            DragReorder.install(handle, this) { rowsReordered() }
+            /*
+             * The handle and the number both grab the row, padded out to a comfortable target: a bare 16px
+             * icon was too small to catch reliably.
+             */
+            val handle = JBLabel(AllIcons.General.Drag).apply {
+                toolTipText = "Drag to reorder (Alt+↑/↓)"
+                border = JBUI.Borders.empty(4, 2)
+            }
+            for (grip in listOf(handle, place)) DragReorder.install(grip, this) { rowsReordered() }
 
             val leading = JPanel().apply {
                 isOpaque = false

@@ -110,7 +110,7 @@ private class AssigneeRuleEditor(
         chips.repaint()
     }
 
-    /** The ranking as the chips now stand, after a drag. */
+    /** The ranking as the chips now stand, once one has been dropped somewhere new. */
     private fun readChipOrder() {
         apply(rule.copy(people = chips.components.filterIsInstance<Chip>().map { it.person }))
     }
@@ -145,7 +145,8 @@ private class AssigneeRuleEditor(
                 apply(rule.copy(people = rule.people.filterNot { it.sameAs(person) }))
                 renderChips()
             }), BorderLayout.EAST)
-            DragReorder.install(name, this) { readChipOrder() }
+            // The whole chip grabs, bar its remove button.
+            for (grip in listOf(name, this)) DragReorder.install(grip, this) { readChipOrder() }
         }
     }
 
