@@ -1,7 +1,6 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
-import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.util.IconLoader
@@ -102,6 +101,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** Shows [issue], linked from the task on display: its row if the list has one, the browser if not. */
         fun openIssue(issue: LinkedIssue)
+
+        /** Opens [url], in the IDE where a plugin there can show it — see [openLink]. */
+        fun openLink(url: String)
     }
 
     // ---- header ----------------------------------------------------------------------------------
@@ -111,7 +113,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         foreground = muted()
     }
 
-    private val browserLink = ActionLink("Open in browser") { issueUrl?.let { url -> BrowserUtil.browse(url) } }.apply {
+    private val browserLink = ActionLink("Open in browser") { issueUrl?.let(edits::openLink) }.apply {
         setExternalLinkIcon()
         font = JBFont.small()
     }
@@ -663,7 +665,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         add(JBLabel(icon), BorderLayout.WEST)
 
         val text = listOf(pr.reference, pr.title).filter { it.isNotBlank() }.joinToString("  ")
-        val link = ActionLink(text.ifBlank { pr.url }) { BrowserUtil.browse(pr.url) }.apply { toolTipText = pr.url }
+        val link = ActionLink(text.ifBlank { pr.url }) { edits.openLink(pr.url) }.apply { toolTipText = pr.url }
         add(link, BorderLayout.CENTER)
 
         val trailing = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { isOpaque = false }
@@ -786,7 +788,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         addHyperlinkListener { e ->
             if (e.eventType != HyperlinkEvent.EventType.ACTIVATED) return@addHyperlinkListener
             val target = e.url?.toString() ?: e.description
-            if (!target.isNullOrBlank()) BrowserUtil.browse(target)
+            if (!target.isNullOrBlank()) edits.openLink(target)
         }
         /*
          * Wrapped text can't report a height until it has a width, and nothing else re-asks once the
@@ -1312,9 +1314,6 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         /** Added to [AVATAR_SIZE] for a reply's indent: the non-breaking space after the avatar, roughly. */
         const val REPLY_INDENT_GAP = 4
-
-        /** Registered by the bundled GitLab plugin; opens its Merge Requests tool window. */
-        const val GITLAB_MERGE_REQUESTS_ACTION = "GitLab.Merge.Request.Show.List"
 
         /** Replies deeper than this stop indenting further. */
         const val MAX_REPLY_DEPTH = 3

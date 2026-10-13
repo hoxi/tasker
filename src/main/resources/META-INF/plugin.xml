@@ -10,6 +10,8 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.tasks</depends>
+    <!-- JetLab opens GitLab links itself, so nothing is registered for it; see openLink. -->
+    <depends optional="true" config-file="tasker-jetlab.xml">com.majera.intellij.codereview.gitlab</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <notificationGroup id="Tasker" displayType="BALLOON"/>
