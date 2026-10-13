@@ -148,6 +148,14 @@ intellijPlatform {
     }
 }
 
+/*
+ * No compare links under the CHANGELOG's sections. The IntelliJ Platform plugin makes them from pluginRepositoryUrl,
+ * setting that up along with intellijPlatform's pluginConfiguration, so this has to come after that block.
+ */
+changelog {
+    repositoryUrl.unsetConvention()
+}
+
 gradle.taskGraph.whenReady {
     val isRelease = hasTask(":signPlugin") || hasTask(":publishPlugin") || hasTask(":verifyPlugin")
     tasks.named("buildSearchableOptions") { enabled = isRelease }

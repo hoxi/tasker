@@ -50,7 +50,7 @@ internal object RuleEditors {
 private class FieldRuleEditor(rule: FieldSortRule, onChange: (SortRule) -> Unit) : RuleEditor {
 
     override val component: JComponent = ComboBox(SortDirection.entries.toTypedArray()).apply {
-        renderer = textListCellRenderer("") { rule.field.kind.label(it) }
+        renderer = textListCellRenderer { rule.field.kind.label(it) }
         selectedItem = rule.direction
         addActionListener {
             val direction = selectedItem as? SortDirection ?: return@addActionListener
@@ -74,7 +74,7 @@ private class AssigneeRuleEditor(
     private val addButton = InplaceButton("Add a person", AllIcons.General.Add, ActionListener { choosePerson() })
 
     private val others = ComboBox(OthersPlacement.entries.toTypedArray()).apply {
-        renderer = textListCellRenderer("") { it.label }
+        renderer = textListCellRenderer { it.label }
         selectedItem = rule.others
         addActionListener {
             val placement = selectedItem as? OthersPlacement ?: return@addActionListener
@@ -122,7 +122,7 @@ private class AssigneeRuleEditor(
         if (candidates.isEmpty()) return
         JBPopupFactory.getInstance()
             .createPopupChooserBuilder(candidates)
-            .setRenderer(textListCellRenderer("") { label(it) })
+            .setRenderer(textListCellRenderer { label(it) })
             .setNamerForFiltering { label(it) }
             .setItemChosenCallback { person ->
                 apply(rule.copy(people = rule.people + person))
