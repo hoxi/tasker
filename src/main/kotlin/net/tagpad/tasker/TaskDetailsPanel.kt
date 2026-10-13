@@ -34,8 +34,8 @@ import java.awt.Font
 import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
-import java.awt.GridLayout
 import java.awt.KeyboardFocusManager
+import java.awt.Point
 import java.awt.Rectangle
 import java.awt.Shape
 import java.awt.event.ActionEvent
@@ -60,7 +60,9 @@ import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.event.HyperlinkEvent
 import javax.swing.plaf.basic.BasicTextUI
+import javax.swing.text.DefaultCaret
 import javax.swing.text.Element
+import javax.swing.text.JTextComponent
 import javax.swing.text.Position
 import javax.swing.text.View
 import javax.swing.text.html.ObjectView
@@ -134,10 +136,10 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     /**
      * Created and Updated, then whatever else the tracker knows about the issue.
      *
-     * Zero rows rather than one, so a task with more to say wraps onto further rows instead of squeezing
-     * every field into a single line.
+     * Two columns in a narrow pane and three in a wider one, wrapping onto further rows as the task has more
+     * to say.
      */
-    private val metaRow = JPanel(GridLayout(0, 2, JBUI.scale(16), JBUI.scale(10))).apply {
+    private val metaRow = JPanel(FieldGridLayout(minColumns = 2, maxColumns = 3, hgap = 16, vgap = 10)).apply {
         isOpaque = false
         add(createdField)
         add(updatedField)
@@ -266,16 +268,15 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         foreground = muted()
     }
 
+    private val bodyScroll = JBScrollPane(bodyColumn).apply {
+        border = JBUI.Borders.empty()
+        isOpaque = false
+        viewport.isOpaque = false
+    }
+
     private val taskCard = JPanel(BorderLayout()).apply {
         add(header, BorderLayout.NORTH)
-        add(
-            JBScrollPane(bodyColumn).apply {
-                border = JBUI.Borders.empty()
-                isOpaque = false
-                viewport.isOpaque = false
-            },
-            BorderLayout.CENTER,
-        )
+        add(bodyScroll, BorderLayout.CENTER)
         add(composer, BorderLayout.SOUTH)
     }
 
@@ -371,6 +372,8 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             exitCommentEdit()
             commentField.text = ""
             expandedLinkGroups.clear()
+            // A new task opens at its description; the comments are a scroll away.
+            bodyScroll.viewport.viewPosition = Point(0, 0)
         }
 
         shownTask = task
@@ -760,10 +763,9 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
     private fun messagePane(message: String): JEditorPane =
         htmlPane().apply { setHtml(this, "<div class='muted'>${esc(message)}</div>") }
 
-    /** Loads [body] into [pane] with the pane's stylesheet, scrolled to its start. */
+    /** Loads [body] into [pane] with the pane's stylesheet. */
     private fun setHtml(pane: JEditorPane, body: String) {
         pane.text = "<html><head><style>${css()}</style></head><body>$body</body></html>"
-        pane.caretPosition = 0
     }
 
     /** A read-only HTML pane for comment content, whose links open in the browser. */
@@ -773,6 +775,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             .build()
         isEditable = false
         isOpaque = false
+        holdCaret()
         /*
          * Let the HTML inherit the component font, so sizes track the IDE's font settings and DPI
          * instead of being hardcoded in the stylesheet.
@@ -1075,7 +1078,6 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         override fun getScrollableTracksViewportHeight(): Boolean = false
     }
 
-    /** A caption above its value — the shape used for the Created / Updated columns. */
     /**
      * Redraws the shown task's dates, which may read "5 minutes ago" and so age; the exact date and time is
      * in their tooltip.
@@ -1086,6 +1088,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
         updatedField.setValue(formatDate(task.updated), tooltip = formatExactDate(task.updated))
     }
 
+    /** A caption above its value — the shape used for the Created / Updated columns. */
     private class MetaField(caption: String) : JPanel(BorderLayout(0, JBUI.scale(2))) {
 
         private val value = JBLabel()
@@ -1213,6 +1216,7 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
 
         init {
             isEditable = false
+            holdCaret()
             isOpaque = false
             lineWrap = true
             wrapStyleWord = true
@@ -1228,8 +1232,15 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
             })
         }
 
+        override fun updateUI() {
+            super.updateUI()
+            if (!isEditable) holdCaret()
+        }
+
         fun setEditing(editing: Boolean) {
             isEditable = editing
+            (caret as? DefaultCaret)?.updatePolicy =
+                if (editing) DefaultCaret.UPDATE_WHEN_ON_EDT else DefaultCaret.NEVER_UPDATE
             isOpaque = editing
             background = if (editing) UIUtil.getTextFieldBackground() else null
             border = if (editing) {
@@ -1347,4 +1358,12 @@ internal fun threadComments(comments: List<Comment>): List<Pair<Comment, Int>> {
     replies[null]?.forEach { visit(it, 0) }
     comments.forEach { visit(it, 0) }
     return ordered
+}
+
+/**
+ * Leaves the caret where it is when the text is replaced. Otherwise it follows the new text, and the caret
+ * scrolls whatever holds this read-only text to show it: the details pane would jump down to each comment.
+ */
+private fun JTextComponent.holdCaret() {
+    (caret as? DefaultCaret)?.updatePolicy = DefaultCaret.NEVER_UPDATE
 }

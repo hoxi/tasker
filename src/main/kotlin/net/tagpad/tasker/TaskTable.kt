@@ -4,15 +4,18 @@ import com.intellij.icons.AllIcons
 import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.render.RenderingUtil
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
 import com.intellij.util.ui.CenteredIcon
 import com.intellij.util.ui.JBUI
 import net.tagpad.tasker.sort.SortDirection
 import net.tagpad.tasker.sort.SortIndicator
+import java.awt.Color
 import java.awt.Component
 import java.awt.Graphics
 import java.awt.Rectangle
+import javax.swing.BorderFactory
 import javax.swing.CellRendererPane
 import javax.swing.Icon
 import javax.swing.JComponent
@@ -151,6 +154,13 @@ internal class SortableHeaderRenderer(
                 SortDirection.DESCENDING -> AllIcons.General.ArrowDown
             }
             if (sorted != null && sorted.ofMany) component.text = "${value ?: ""} ${sorted.position}"
+            /*
+             * Keep the theme's padding but not its lines. A theme may give TableHeader.cellBorder a colour, boxing
+             * every heading, while the header UI already draws the separators between columns.
+             */
+            component.border?.getBorderInsets(component)?.let {
+                component.border = BorderFactory.createEmptyBorder(it.top, it.left, it.bottom, it.right)
+            }
         }
         return component
     }
@@ -172,6 +182,14 @@ internal class SpanningTreeTable(model: TreeTableModel) : TreeTable(model) {
     }
 
     override fun createDefaultColumnModel(): TableColumnModel = PinnedFirstColumnModel()
+
+    /*
+     * The selection dims when the table loses focus, as the tree column already does. Every other cell
+     * renderer reads these, and Swing's own would otherwise paint the focused colours regardless.
+     */
+    override fun getSelectionBackground(): Color = RenderingUtil.getSelectionBackground(this)
+
+    override fun getSelectionForeground(): Color = RenderingUtil.getSelectionForeground(this)
 
     /**
      * Refuses to start a drag on the pinned ID column: returning without setting the dragged column
