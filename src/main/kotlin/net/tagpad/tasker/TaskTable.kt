@@ -2,12 +2,15 @@ package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
 import com.intellij.ui.ColoredTreeCellRenderer
+import com.intellij.ui.RowIcon
 import com.intellij.ui.SimpleColoredComponent
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.render.RenderingUtil
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
+import com.intellij.util.IconUtil
 import com.intellij.util.ui.CenteredIcon
+import com.intellij.util.ui.EmptyIcon
 import com.intellij.util.ui.JBUI
 import net.tagpad.tasker.sort.SortDirection
 import net.tagpad.tasker.sort.SortIndicator
@@ -35,6 +38,12 @@ import javax.swing.tree.DefaultMutableTreeNode
 /** The ID column, which carries the tree and stays pinned at the far left. */
 private const val ID_COLUMN = 0
 
+/** The size of a task's icon, in unscaled pixels. */
+private const val ICON_SIZE = 16
+
+/** Space between a started task's arrow and its icon, in unscaled pixels. */
+private const val ARROW_GAP = 4
+
 /** Column model that keeps the first (ID / tree) column pinned at the far left; other columns may reorder. */
 private class PinnedFirstColumnModel : DefaultTableColumnModel() {
     override fun moveColumn(columnIndex: Int, newIndex: Int) {
@@ -44,13 +53,25 @@ private class PinnedFirstColumnModel : DefaultTableColumnModel() {
 }
 
 /**
+ * [icon] at the 16px every other icon in a row is, scaled if a tracker serves it at another size: Jira lets
+ * a custom issue type have any image, and the connector loads it at whatever size it was uploaded.
+ */
+internal fun fittedIcon(icon: Icon): Icon {
+    val size = JBUI.scale(ICON_SIZE)
+    if (icon.iconWidth <= 0 || icon.iconHeight <= 0 || (icon.iconWidth == size && icon.iconHeight == size)) return icon
+    return IconUtil.resizeSquared(icon, ICON_SIZE)
+}
+
+/**
  * Paints [delegate], or [fallback] while [delegate] reports no size.
  * Jira's connector loads issue-type icons with `ImageIcon(url)`, and Jira Cloud serves them as SVG,
  * which ImageIcon cannot decode — the result is a -1x-1 icon that the platform's selection painting
  * reports as an error. Hiding the delegate behind this wrapper keeps the platform from inspecting it.
  */
 internal class FallbackIcon(private val delegate: Icon, private val fallback: Icon) : Icon {
-    private fun current(): Icon = if (delegate.iconWidth > 0 && delegate.iconHeight > 0) delegate else fallback
+    private val fitted by lazy { fittedIcon(delegate) }
+
+    private fun current(): Icon = if (delegate.iconWidth > 0 && delegate.iconHeight > 0) fitted else fallback
 
     override fun paintIcon(c: Component?, g: Graphics?, x: Int, y: Int) = current().paintIcon(c, g, x, y)
     override fun getIconWidth(): Int = current().iconWidth
@@ -65,11 +86,13 @@ internal enum class TaskActivity { ACTIVE, STARTED, IDLE }
 
 /**
  * Renders the tree column (ID): server name for group rows, presentable id for task rows. [activity]
- * tells it where a task stands with Task Management, [grouped] whether rows sit under their server, and
- * [taskIcon] the icon to show for a task its decoration has none for.
+ * tells it where a task stands with Task Management, [anyStarted] whether any task has been started, so
+ * room for the arrow is kept, [grouped] whether rows sit under their server, and [taskIcon] the icon to
+ * show for a task its decoration has none for.
  */
 internal class IdCellRenderer(
     private val activity: (TaskNode) -> TaskActivity,
+    private val anyStarted: () -> Boolean,
     private val grouped: () -> Boolean,
     private val taskIcon: (TaskNode) -> Icon,
 ) : ColoredTreeCellRenderer() {
@@ -99,18 +122,21 @@ internal class IdCellRenderer(
                 val state = activity(obj)
                 val active = state == TaskActivity.ACTIVE
                 /*
-                 * The active task gets a yellow arrow in the icon slot, where the eye already is: bold alone
+                 * The active task gets a yellow arrow ahead of its icon, where the eye already is: bold alone
                  * proved far too quiet on an id as short as "PC-1". It is the debugger's "you are here"
                  * arrow, centred in the 16px slot it is 12px of. Tasks started earlier get the plain grey
-                 * one. Otherwise, when flat, the server icon shows the task's origin; when grouped, that
-                 * already sits on the header row.
+                 * one, and the rest an empty slot, so the ids line up. A small gap keeps the arrow apart from
+                 * the icon.
                  */
-                icon = when {
+                val arrow = when {
                     active -> CenteredIcon(AllIcons.Debugger.NextStatement, JBUI.scale(16), JBUI.scale(16), false)
                     state == TaskActivity.STARTED -> AllIcons.Actions.Forward
-                    grouped() -> obj.decoration?.icon ?: taskIcon(obj)
-                    else -> obj.repository.icon
+                    anyStarted() -> EmptyIcon.ICON_16
+                    else -> null
                 }
+                // When flat, the server icon shows the task's origin; when grouped, that is on the header row.
+                val kind = if (grouped()) obj.decoration?.icon ?: taskIcon(obj) else obj.repository.icon
+                icon = arrow?.let { RowIcon(it, EmptyIcon.create(ARROW_GAP, 16), kind) } ?: kind
                 append(
                     task.presentableId,
                     when {
