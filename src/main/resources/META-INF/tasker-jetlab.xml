@@ -1,0 +1,6 @@
+<idea-plugin>
+    <!--
+        Nothing to register: JetLab hooks the platform's url openers, which Tasker offers every link to first,
+        so a link to a GitLab repository JetLab knows opens there. See openLink.
+    -->
+</idea-plugin>

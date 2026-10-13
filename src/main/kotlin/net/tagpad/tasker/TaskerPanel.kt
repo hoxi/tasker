@@ -1,7 +1,6 @@
 package net.tagpad.tasker
 
 import com.intellij.icons.AllIcons
-import com.intellij.ide.BrowserUtil
 import com.intellij.ide.ui.LafManagerListener
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
@@ -1335,8 +1334,10 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
                 treeTable.scrollRectToVisible(treeTable.getCellRect(treeTable.selectedRow, 0, true))
                 return
             }
-            issue.url?.let(BrowserUtil::browse)
+            issue.url?.let(::openLink)
         }
+
+        override fun openLink(url: String) = openLink(project, url, detailsPanel)
     }
 
     /** Resolves the selection and its adapter, then hands the write off to [applyWrite]. */
