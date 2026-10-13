@@ -38,11 +38,13 @@ import com.intellij.tasks.TaskListener
 import com.intellij.tasks.TaskManager
 import com.intellij.tasks.TaskRepository
 import com.intellij.ui.BadgeIconSupplier
+import com.intellij.ui.ClientProperty
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.JBIntSpinner
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.tree.ui.Control
 import com.intellij.ui.treeStructure.treetable.ListTreeTableModelOnColumns
 import com.intellij.ui.treeStructure.treetable.TreeTable
 import com.intellij.util.concurrency.AppExecutorUtil
@@ -363,10 +365,13 @@ class TaskerPanel(private val project: Project) : SimpleToolWindowPanel(true, tr
 
         treeTable.setRootVisible(false)
         treeTable.tree.showsRootHandles = true
+        // Tasks have no children, so they need no room for an expand handle: grouped, they line up under their server.
+        ClientProperty.put(treeTable.tree, Control.Painter.KEY, Control.Painter.LEAF_WITHOUT_INDENT)
         treeTable.setRowHeight(JBUI.scale(24))
         treeTable.setTreeCellRenderer(
             IdCellRenderer(
                 activity = { activityOf(it.task, it.repository) },
+                anyStarted = { TaskManager.getManager(project).localTasks.any { !it.isDefault } },
                 grouped = { groupByServer },
                 taskIcon = { taskIcons.getOrPut(it.task.icon) { FallbackIcon(it.task.icon, it.repository.icon) } },
             ),

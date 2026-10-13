@@ -32,6 +32,7 @@ import net.tagpad.tasker.baseUrlOrNull
 import net.tagpad.tasker.basicAuth
 import net.tagpad.tasker.credentialsOrNull
 import net.tagpad.tasker.currentUserId
+import net.tagpad.tasker.fittedIcon
 import net.tagpad.tasker.idOrEmpty
 import net.tagpad.tasker.objectOrNull
 import net.tagpad.tasker.readJsonObject
@@ -470,7 +471,9 @@ class JiraTaskEditor(private val repository: TaskRepository) : TaskEditor {
 
         val icon = try {
             val file = iconFile(url)
-            IconLoader.findIcon(file.toUri().toURL())?.takeIf { it.iconWidth > 0 && it.iconHeight > 0 }
+            IconLoader.findIcon(file.toUri().toURL())
+                ?.takeIf { it.iconWidth > 0 && it.iconHeight > 0 }
+                ?.let(::fittedIcon)
         } catch (e: Exception) {
             LOG.debug("Could not load Jira icon $url", e)
             null
