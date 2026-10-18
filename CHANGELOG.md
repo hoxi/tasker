@@ -1,6 +1,11 @@
 # Changelog
 
-## [2026.2.1]
+## 2026.2.2
+
+- A long description in the details pane is no longer cut short, with the comments drawn over its last
+  lines
+
+## 2026.2.1
 
 - **Every Task Management server type** is now listed, not just those with a Tasker adapter
 - **Jira** joins GitHub, GitLab and YouTrack: in-place editing, its own status names, issue types and priorities
@@ -21,6 +26,6 @@
   further left, and oversized issue-type icons are scaled to fit
 - Works with Task Management installed from the Marketplace, as needed from 2026.2; verified against 2026.1 too
 
-## [2026.2]
+## 2026.2
 
 - Initial release of plugin

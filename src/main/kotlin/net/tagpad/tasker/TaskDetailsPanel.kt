@@ -26,6 +26,7 @@ import com.intellij.util.ui.WrapLayout
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Color
+import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -218,22 +219,18 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      */
     private val commentsList = JPanel(VerticalLayout(0)).apply { isOpaque = false }
 
+    private val commentsSection = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        isOpaque = false
+        add(commentsHeading, BorderLayout.NORTH)
+        add(commentsList, BorderLayout.CENTER)
+    }
+
     private val bodyColumn = BodyColumn().apply {
         border = JBUI.Borders.empty(10, 16, 16, 16)
-        val c = GridBagConstraints().apply {
-            gridx = 0
-            gridy = 0
-            weightx = 1.0
-            anchor = GridBagConstraints.NORTHWEST
-            fill = GridBagConstraints.HORIZONTAL
-        }
-        add(descriptionSection, c)
-        add(pullRequestsSection, c.apply { gridy = 1; insets = JBUI.insetsTop(16) })
-        add(linksSection, c.apply { gridy = 2; insets = JBUI.insetsTop(16) })
-        add(commentsHeading, c.apply { gridy = 3; insets = JBUI.insetsTop(16) })
-        add(commentsList, c.apply { gridy = 4; insets = JBUI.insetsTop(6) })
-        // Soaks up leftover height so a short task's content stays at the top.
-        add(Box.createVerticalGlue(), c.apply { gridy = 5; weighty = 1.0; fill = GridBagConstraints.BOTH; insets = JBUI.emptyInsets() })
+        add(descriptionSection)
+        add(pullRequestsSection)
+        add(linksSection)
+        add(commentsSection)
     }
 
     // ---- composer --------------------------------------------------------------------------------
@@ -1066,11 +1063,38 @@ class TaskDetailsPanel(private val edits: EditRequests) : JPanel(BorderLayout())
      * Tracking the viewport width is the load-bearing part: left to itself the nested [JEditorPane]
      * reports the width of its longest unbroken line as its preferred width, so it would never wrap and
      * the pane would scroll sideways instead.
+     *
+     * The sections are stacked at their preferred heights, never less. Those same panes still report
+     * their longest line as their preferred width, wider than the column, and a GridBagLayout handed
+     * less width than it prefers falls back to every section's minimum size — which shaved the bottom
+     * lines off a long description and slid the comments up over them.
      */
-    private class BodyColumn : JPanel(GridBagLayout()), Scrollable {
+    private class BodyColumn : JPanel(VerticalLayout(16)), Scrollable {
         init {
             isOpaque = false
             isFocusable = true // see parkFocus
+        }
+
+        override fun doLayout() {
+            super.doLayout()
+            /*
+             * Wrapped text measures its height at the width it has, and it is only handed a new width
+             * once its section is laid out — after the heights here were decided from the old one. Its
+             * own resize listener revalidates afterwards, but that is a queued request, dropped while
+             * the pane isn't showing, so a description could stay a line short with the comments drawn
+             * over the rest. So lay the sections out now, drop the heights they cached on the way, and
+             * decide again.
+             */
+            for (section in components) (section as? Container)?.validate()
+            UIUtil.uiTraverser(this).filter(JTextComponent::class.java).forEach { it.invalidate() }
+            super.doLayout()
+            /*
+             * Our own height was handed down by the viewport, measured the stale way, so grow to fit if
+             * the content no longer does; the viewport follows its view's size, scroll bars and all.
+             * Never shrink: a viewport taller than the content may have stretched us on purpose.
+             */
+            val fit = preferredSize.height
+            if (fit > height) setSize(width, fit)
         }
 
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
